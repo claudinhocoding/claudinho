@@ -1,16 +1,16 @@
-# Claudinho 🎤🤖
+# Claudinho 🎤🐱
 
 A DIY voice assistant powered by [OpenClaw](https://github.com/openclaw/openclaw) + Claude, running on Raspberry Pi 5.
 
-**Local wake word. Local speech-to-text. Cloud intelligence.**
+**Local wake word. Local STT. Local TTS. Cloud intelligence.**
 
 ## Features
 
 - 🎯 **Wake word detection** — "Hey Claudinho" (Porcupine)
 - 🎤 **Local STT** — Whisper.cpp running on-device
 - 🧠 **Cloud LLM** — Claude via OpenClaw
-- 🔊 **TTS** — Piper (local) or ElevenLabs (cloud)
-- 🔒 **Privacy-first** — Audio stays local, only text goes to the cloud
+- 🐱 **Local TTS** — KittenTTS (15M params, runs on CPU)
+- 🔒 **Privacy-first** — Audio processed locally, only text goes to cloud
 
 ## Architecture
 
@@ -20,8 +20,8 @@ A DIY voice assistant powered by [OpenClaw](https://github.com/openclaw/openclaw
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │   ┌──────────┐    ┌──────────┐    ┌──────────┐             │
-│   │ ReSpeaker│───▶│ Porcupine│───▶│ Whisper  │             │
-│   │ 2-Mic    │    │ Wake Word│    │ STT      │             │
+│   │ USB Mic  │───▶│ Porcupine│───▶│ Whisper  │             │
+│   │          │    │ Wake Word│    │ STT      │             │
 │   └──────────┘    └──────────┘    └──────────┘             │
 │                                         │                   │
 │                                         ▼                   │
@@ -31,8 +31,8 @@ A DIY voice assistant powered by [OpenClaw](https://github.com/openclaw/openclaw
 │                                         │         Claude   │
 │                                         ▼          API     │
 │   ┌──────────┐    ┌──────────┐    ┌──────────┐     │       │
-│   │ Speaker  │◀───│ Piper    │◀───│ Response │─────┘       │
-│   │          │    │ TTS      │    │          │             │
+│   │ Speaker  │◀───│ KittenTTS│◀───│ Response │─────┘       │
+│   │          │    │    🐱    │    │          │             │
 │   └──────────┘    └──────────┘    └──────────┘             │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
@@ -43,40 +43,118 @@ A DIY voice assistant powered by [OpenClaw](https://github.com/openclaw/openclaw
 | Component | Model | Price |
 |-----------|-------|-------|
 | Computer | Raspberry Pi 5 (8GB) | ~$135 |
-| Microphone | ReSpeaker 2-Mic HAT | ~$15 |
-| Speaker | JBL Go 3 (or similar) | ~$40 |
-| Power | USB-C 27W supply | ~$15 |
-| Storage | 32GB SD card | ~$12 |
-| **Total** | | **~$215** |
+| Microphone | Adafruit Mini USB Mic | ~$6 |
+| Speaker | Adafruit Mini USB Speaker | ~$13 |
+| Power | USB-C 27W PSU | ~$14 |
+| Storage | 32GB microSD card | ~$10 |
+| **Total** | | **~$178** |
 
 ## Software Stack
 
-- **OS**: Raspberry Pi OS (64-bit)
-- **Wake Word**: [Porcupine](https://picovoice.ai/platform/porcupine/) (Picovoice)
-- **STT**: [Whisper.cpp](https://github.com/ggerganov/whisper.cpp)
-- **Assistant**: [OpenClaw](https://github.com/openclaw/openclaw) + Claude
-- **TTS**: [Piper](https://github.com/rhasspy/piper)
+| Component | Library | Purpose |
+|-----------|---------|---------|
+| OS | Raspberry Pi OS (64-bit) | Base system |
+| Wake Word | [Porcupine](https://picovoice.ai/platform/porcupine/) | "Hey Claudinho" detection |
+| STT | [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) | Speech to text |
+| LLM | [OpenClaw](https://github.com/openclaw/openclaw) + Claude | Intelligence |
+| TTS | [KittenTTS](https://github.com/KittenML/KittenTTS) | Text to speech |
+
+## Project Structure
+
+```
+claudinho/
+├── src/
+│   ├── main.py              # Main entry point
+│   ├── wake_word.py         # Porcupine wake word detection
+│   ├── stt.py               # Whisper.cpp integration
+│   ├── assistant.py         # OpenClaw/Claude integration
+│   ├── tts.py               # KittenTTS integration
+│   └── audio.py             # Audio I/O utilities
+├── config/
+│   └── config.yaml          # Configuration
+├── scripts/
+│   ├── install.sh           # Installation script
+│   └── setup_pi.sh          # Pi setup script
+├── requirements.txt
+└── README.md
+```
 
 ## Setup
 
-> 🚧 Coming soon — project in early development
-
 ### 1. Flash Raspberry Pi OS
 
-### 2. Install dependencies
+Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/):
+- Choose Raspberry Pi OS (64-bit)
+- Configure WiFi and enable SSH in settings
+- Flash to SD card
 
-### 3. Configure OpenClaw
+### 2. SSH into Pi
 
-### 4. Run Claudinho
+```bash
+ssh pi@claudinho.local
+```
+
+### 3. Clone and install
+
+```bash
+git clone https://github.com/claudinhocoding/claudinho.git
+cd claudinho
+./scripts/install.sh
+```
+
+### 4. Configure
+
+```bash
+cp config/config.example.yaml config/config.yaml
+# Edit with your settings
+```
+
+### 5. Run
+
+```bash
+python src/main.py
+```
+
+## Configuration
+
+```yaml
+# config/config.yaml
+wake_word:
+  keyword: "hey claudinho"  # or use built-in: "jarvis", "computer"
+  sensitivity: 0.5
+
+stt:
+  model: "base"  # tiny, base, small, medium
+  language: "en"
+
+tts:
+  voice: "expr-voice-2-f"  # KittenTTS voice
+
+openclaw:
+  # Uses existing OpenClaw installation
+  gateway_url: "http://localhost:18789"
+```
 
 ## Roadmap
 
+- [x] Project setup and architecture
 - [ ] Basic wake word → STT → Claude → TTS pipeline
-- [ ] ReSpeaker LED feedback (listening/thinking/speaking states)
+- [ ] Audio I/O handling
 - [ ] Conversation context/memory
+- [ ] LED/display status feedback
 - [ ] Home Assistant integration
 - [ ] Custom wake word training
 - [ ] 3D-printable enclosure
+
+## Development
+
+```bash
+# Run in development mode
+python src/main.py --debug
+
+# Test individual components
+python -m pytest tests/
+```
 
 ## License
 
