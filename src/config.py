@@ -31,12 +31,8 @@ WAKE_WORD_MODEL = "hey_jarvis_v0.1"  # built-in; swap to custom .onnx later
 WAKE_WORD_THRESHOLD = 0.5
 
 # ── LLM ───────────────────────────────────────────────────────
-# Reads from ANTHROPIC_API_KEY env var by default
-ANTHROPIC_MODEL = "claude-3-5-haiku-20241022"
-SYSTEM_PROMPT = """You are Claudinho, a friendly voice assistant running on a Raspberry Pi 5.
-Keep responses concise and conversational — you're being spoken aloud.
-2-3 sentences max unless asked for more detail.
-You speak English and Portuguese. Reply in whatever language the user speaks to you."""
+# Handled by OpenClaw gateway — model and system prompt configured there
+# No API key needed here; OpenClaw manages authentication
 
 # ── Recording ─────────────────────────────────────────────────
 SILENCE_THRESHOLD = 500      # RMS threshold for silence detection

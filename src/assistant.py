@@ -2,75 +2,85 @@
 Assistant
 =========
 
-Handles conversation with Claude via Anthropic SDK.
-Maintains conversation history within a session.
+Talks to Claude via OpenClaw's OpenAI-compatible HTTP API.
+This gives us memory, tools, and conversation persistence.
 """
 
 import logging
-import os
+import json
+from pathlib import Path
 
-import anthropic
-
-import config
+import requests
 
 logger = logging.getLogger(__name__)
 
+GATEWAY_URL = "http://127.0.0.1:18789"
+
 
 class Assistant:
-    """Chat with Claude using the Anthropic Python SDK."""
+    """Chat with Claude through the local OpenClaw gateway."""
     
     def __init__(self):
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
+        self.token = self._read_token()
+        self.session_user = "claudinho-voice"  # stable session key
+        
+        if not self.token:
             raise ValueError(
-                "ANTHROPIC_API_KEY not set. Export it:\n"
-                "  export ANTHROPIC_API_KEY=sk-ant-..."
+                "No OpenClaw gateway token found.\n"
+                "Check ~/.openclaw/openclaw.json for gateway.auth.token"
             )
         
-        self.client = anthropic.Anthropic(api_key=api_key)
-        self.conversation: list[dict] = []
-        self.max_history = 20  # keep last N turns to manage context
+        logger.info("Connected to OpenClaw gateway")
+    
+    def _read_token(self) -> str:
+        """Read gateway token from OpenClaw config."""
+        config_path = Path.home() / ".openclaw" / "openclaw.json"
+        if config_path.exists():
+            data = json.loads(config_path.read_text())
+            token = data.get("gateway", {}).get("auth", {}).get("token", "")
+            if token and token != "__OPENCLAW_REDACTED__":
+                return token
+        return ""
     
     def chat(self, text: str) -> str:
         """
-        Send a message and get a response.
+        Send a message through OpenClaw and get a response.
         
-        Args:
-            text: User's transcribed speech.
-            
-        Returns:
-            Claude's response text.
+        Uses the OpenAI-compatible chat completions endpoint.
+        The 'user' field gives us a persistent session.
         """
-        # Add user message
-        self.conversation.append({"role": "user", "content": text})
-        
-        # Trim history if too long
-        if len(self.conversation) > self.max_history:
-            self.conversation = self.conversation[-self.max_history:]
-        
         try:
-            response = self.client.messages.create(
-                model=config.ANTHROPIC_MODEL,
-                max_tokens=300,  # keep responses short for voice
-                system=config.SYSTEM_PROMPT,
-                messages=self.conversation,
+            response = requests.post(
+                f"{GATEWAY_URL}/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Content-Type": "application/json",
+                    "x-openclaw-agent-id": "main",
+                },
+                json={
+                    "model": "openclaw",
+                    "user": self.session_user,
+                    "messages": [{"role": "user", "content": text}],
+                },
+                timeout=60,
             )
             
-            reply = response.content[0].text
-            
-            # Add assistant response to history
-            self.conversation.append({"role": "assistant", "content": reply})
-            
-            return reply
-            
-        except anthropic.APIError as e:
-            logger.error(f"Anthropic API error: {e}")
-            return "Sorry, I'm having trouble thinking right now."
+            if response.status_code == 200:
+                data = response.json()
+                reply = data["choices"][0]["message"]["content"]
+                return reply
+            else:
+                logger.error(f"OpenClaw API error: {response.status_code} {response.text}")
+                return "Sorry, I'm having trouble thinking right now."
+                
+        except requests.exceptions.ConnectionError:
+            logger.error("Cannot connect to OpenClaw gateway. Is it running?")
+            return "Sorry, my brain isn't responding right now."
         except Exception as e:
             logger.error(f"Assistant error: {e}")
             return "Sorry, something went wrong."
     
     def reset(self):
-        """Clear conversation history."""
-        self.conversation.clear()
-        logger.info("Conversation history cleared")
+        """Reset session (start fresh conversation)."""
+        self.session_user = f"claudinho-voice-{id(self)}"
+        logger.info("Conversation reset")
