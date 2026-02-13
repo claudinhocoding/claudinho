@@ -88,24 +88,12 @@ def play_beep(beep_path, speaker):
     )
 
 
-def record_sample(pa, device_index, duration=RECORD_SECONDS):
-    """Record a single sample, return raw audio bytes."""
-    stream = pa.open(
-        format=pyaudio.paInt16,
-        channels=1,
-        rate=MIC_RATE,
-        input=True,
-        input_device_index=device_index,
-        frames_per_buffer=CHUNK,
-    )
-    
+def record_sample(stream, duration=RECORD_SECONDS):
+    """Record a single sample from an already-open stream."""
     frames = []
     for _ in range(int(MIC_RATE / CHUNK * duration)):
         data = stream.read(CHUNK, exception_on_overflow=False)
         frames.append(data)
-    
-    stream.stop_stream()
-    stream.close()
     
     return b"".join(frames)
 
@@ -178,6 +166,16 @@ def main():
         print(f"   Mic: [{mic_idx}] {info['name']}")
     print(f"   Speaker: {speaker}\n")
     
+    # Open mic stream ONCE and keep it open
+    stream = pa.open(
+        format=pyaudio.paInt16,
+        channels=1,
+        rate=MIC_RATE,
+        input=True,
+        input_device_index=mic_idx,
+        frames_per_buffer=CHUNK,
+    )
+    
     input("Press Enter to start recording...")
     print()
     
@@ -191,9 +189,12 @@ def main():
             play_beep(beep_path, speaker)
             time.sleep(0.15)  # tiny gap after beep
             
+            # Drain any audio that accumulated during beep
+            stream.read(stream.get_read_available() or CHUNK, exception_on_overflow=False)
+            
             # Record
             print(f"🔴 Say \"{args.word}\"...", end="", flush=True)
-            audio = record_sample(pa, mic_idx)
+            audio = record_sample(stream)
             
             # Save
             filename = f"{args.word}_{num:04d}.wav"
@@ -208,6 +209,8 @@ def main():
     except KeyboardInterrupt:
         print(f"\n\nStopped early.")
     finally:
+        stream.stop_stream()
+        stream.close()
         pa.terminate()
     
     total = start_num + recorded
