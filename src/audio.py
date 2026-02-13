@@ -2,278 +2,207 @@
 Audio Utilities
 ===============
 
-Handles audio recording and playback.
-Works with USB microphone and speaker.
+Record and play audio using ALSA (arecord/aplay).
+Uses subprocess — simple, reliable, tested on Pi 5.
 """
 
 import logging
+import subprocess
 import wave
+import struct
+import math
 import time
 from pathlib import Path
-from typing import Optional
-import numpy as np
+
+import config
 
 logger = logging.getLogger(__name__)
 
-# Audio parameters
-SAMPLE_RATE = 16000
-CHANNELS = 1
-CHUNK_SIZE = 1024
+
+def record_fixed(duration: float, output_path: str) -> str:
+    """Record audio for a fixed duration using arecord."""
+    subprocess.run(
+        [
+            "arecord",
+            "-D", config.MIC_DEVICE,
+            "-f", "S16_LE",
+            "-r", str(config.SAMPLE_RATE),
+            "-c", str(config.CHANNELS),
+            "-d", str(int(duration)),
+            output_path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return output_path
 
 
-class AudioRecorder:
-    """Records audio from microphone."""
+def record_until_silence(output_path: str) -> str:
+    """
+    Record audio until silence is detected.
     
-    def __init__(
-        self,
-        sample_rate: int = SAMPLE_RATE,
-        channels: int = CHANNELS,
-        device_index: Optional[int] = None,
-    ):
-        self.sample_rate = sample_rate
-        self.channels = channels
-        self.device_index = device_index
-        self._pyaudio = None
-        self._stream = None
+    Uses arecord to record max duration, then trims trailing silence.
+    For a voice assistant, this is good enough — Whisper handles
+    trailing silence fine, and we cap at MAX_RECORD_DURATION.
+    """
+    logger.info("🎤 Recording...")
     
-    def _initialize(self):
-        """Initialize PyAudio."""
-        if self._pyaudio is not None:
-            return
+    subprocess.run(
+        [
+            "arecord",
+            "-D", config.MIC_DEVICE,
+            "-f", "S16_LE",
+            "-r", str(config.SAMPLE_RATE),
+            "-c", str(config.CHANNELS),
+            "-d", str(config.MAX_RECORD_DURATION),
+            output_path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    
+    # Check if recording has speech (not just silence)
+    if not has_speech(output_path):
+        logger.info("No speech detected in recording")
+        return ""
+    
+    return output_path
+
+
+def record_with_vad(output_path: str) -> str:
+    """
+    Record with simple voice activity detection.
+    
+    Starts arecord, monitors the file size / audio energy,
+    and kills the process when silence is detected.
+    """
+    logger.info("🎤 Recording (press Ctrl+C or wait for silence)...")
+    
+    proc = subprocess.Popen(
+        [
+            "arecord",
+            "-D", config.MIC_DEVICE,
+            "-f", "S16_LE",
+            "-r", str(config.SAMPLE_RATE),
+            "-c", str(config.CHANNELS),
+            output_path,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    
+    # Wait for minimum duration before checking silence
+    time.sleep(config.MIN_RECORD_DURATION)
+    
+    # Monitor for silence by periodically reading the WAV file
+    silence_start = None
+    start_time = time.time()
+    
+    while proc.poll() is None:
+        elapsed = time.time() - start_time
         
+        # Hard limit
+        if elapsed >= config.MAX_RECORD_DURATION:
+            logger.info(f"Max duration reached ({config.MAX_RECORD_DURATION}s)")
+            break
+        
+        # Check tail of recording for silence
         try:
-            import pyaudio
-            self._pyaudio = pyaudio.PyAudio()
-        except ImportError:
-            raise ImportError("PyAudio not installed. Run: pip install pyaudio")
-    
-    def record(self, duration: float) -> np.ndarray:
-        """
-        Record audio for a fixed duration.
-        
-        Args:
-            duration: Recording duration in seconds.
-            
-        Returns:
-            Audio data as numpy array.
-        """
-        self._initialize()
-        import pyaudio
-        
-        stream = self._pyaudio.open(
-            format=pyaudio.paInt16,
-            channels=self.channels,
-            rate=self.sample_rate,
-            input=True,
-            input_device_index=self.device_index,
-            frames_per_buffer=CHUNK_SIZE
-        )
-        
-        frames = []
-        num_chunks = int(self.sample_rate / CHUNK_SIZE * duration)
-        
-        logger.debug(f"Recording for {duration}s...")
-        
-        for _ in range(num_chunks):
-            data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-            frames.append(data)
-        
-        stream.stop_stream()
-        stream.close()
-        
-        # Convert to numpy array
-        audio_data = np.frombuffer(b''.join(frames), dtype=np.int16)
-        
-        return audio_data
-    
-    def record_until_silence(
-        self,
-        silence_threshold: int = 500,
-        silence_duration: float = 1.5,
-        max_duration: float = 30.0,
-    ) -> np.ndarray:
-        """
-        Record audio until silence is detected.
-        
-        Args:
-            silence_threshold: RMS threshold for silence detection.
-            silence_duration: Seconds of silence to stop recording.
-            max_duration: Maximum recording duration.
-            
-        Returns:
-            Audio data as numpy array.
-        """
-        self._initialize()
-        import pyaudio
-        
-        stream = self._pyaudio.open(
-            format=pyaudio.paInt16,
-            channels=self.channels,
-            rate=self.sample_rate,
-            input=True,
-            input_device_index=self.device_index,
-            frames_per_buffer=CHUNK_SIZE
-        )
-        
-        frames = []
-        silent_chunks = 0
-        silent_chunks_needed = int(silence_duration * self.sample_rate / CHUNK_SIZE)
-        max_chunks = int(max_duration * self.sample_rate / CHUNK_SIZE)
-        
-        logger.debug("Recording until silence...")
-        
-        for i in range(max_chunks):
-            data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
-            frames.append(data)
-            
-            # Check for silence
-            audio_chunk = np.frombuffer(data, dtype=np.int16)
-            rms = np.sqrt(np.mean(audio_chunk.astype(np.float32) ** 2))
-            
-            if rms < silence_threshold:
-                silent_chunks += 1
+            rms = get_tail_rms(output_path)
+            if rms < config.SILENCE_THRESHOLD:
+                if silence_start is None:
+                    silence_start = time.time()
+                elif time.time() - silence_start >= config.SILENCE_DURATION:
+                    logger.info("Silence detected, stopping recording")
+                    break
             else:
-                silent_chunks = 0
+                silence_start = None
+        except Exception:
+            pass  # File might not be ready yet
+        
+        time.sleep(0.2)
+    
+    proc.terminate()
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    
+    if not has_speech(output_path):
+        logger.info("No speech detected")
+        return ""
+    
+    return output_path
+
+
+def get_tail_rms(wav_path: str, tail_seconds: float = 0.5) -> float:
+    """Get RMS of the last N seconds of a WAV file."""
+    try:
+        with wave.open(wav_path, "rb") as wf:
+            n_frames = wf.getnframes()
+            tail_frames = int(wf.getframerate() * tail_seconds)
             
-            # Stop if enough silence
-            if silent_chunks >= silent_chunks_needed and len(frames) > silent_chunks_needed:
-                logger.debug(f"Silence detected after {i * CHUNK_SIZE / self.sample_rate:.1f}s")
-                break
-        
-        stream.stop_stream()
-        stream.close()
-        
-        # Convert to numpy array
-        audio_data = np.frombuffer(b''.join(frames), dtype=np.int16)
-        
-        return audio_data
-    
-    def cleanup(self):
-        """Release resources."""
-        if self._pyaudio is not None:
-            self._pyaudio.terminate()
-            self._pyaudio = None
-    
-    @staticmethod
-    def list_devices():
-        """List available audio input devices."""
-        try:
-            import pyaudio
-            p = pyaudio.PyAudio()
-            print("Audio input devices:")
-            for i in range(p.get_device_count()):
-                info = p.get_device_info_by_index(i)
-                if info['maxInputChannels'] > 0:
-                    print(f"  [{i}] {info['name']}")
-            p.terminate()
-        except ImportError:
-            print("PyAudio not installed")
-
-
-class AudioPlayer:
-    """Plays audio through speaker."""
-    
-    def __init__(
-        self,
-        device_index: Optional[int] = None,
-        sounds_dir: Optional[str] = None,
-    ):
-        self.device_index = device_index
-        self.sounds_dir = Path(sounds_dir) if sounds_dir else Path(__file__).parent.parent / "sounds"
-        self._pyaudio = None
-    
-    def _initialize(self):
-        """Initialize PyAudio."""
-        if self._pyaudio is not None:
-            return
-        
-        try:
-            import pyaudio
-            self._pyaudio = pyaudio.PyAudio()
-        except ImportError:
-            raise ImportError("PyAudio not installed. Run: pip install pyaudio")
-    
-    def play(self, audio: np.ndarray, sample_rate: int = 24000):
-        """
-        Play audio data.
-        
-        Args:
-            audio: Audio data as numpy array (float32 or int16).
-            sample_rate: Sample rate of the audio.
-        """
-        self._initialize()
-        import pyaudio
-        
-        # Convert float32 to int16 if needed
-        if audio.dtype == np.float32:
-            audio = (audio * 32767).astype(np.int16)
-        
-        stream = self._pyaudio.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=sample_rate,
-            output=True,
-            output_device_index=self.device_index,
-        )
-        
-        stream.write(audio.tobytes())
-        stream.stop_stream()
-        stream.close()
-    
-    def play_file(self, path: str):
-        """Play a WAV file."""
-        self._initialize()
-        import pyaudio
-        
-        with wave.open(path, 'rb') as wf:
-            stream = self._pyaudio.open(
-                format=self._pyaudio.get_format_from_width(wf.getsampwidth()),
-                channels=wf.getnchannels(),
-                rate=wf.getframerate(),
-                output=True,
-                output_device_index=self.device_index,
-            )
+            if n_frames < tail_frames:
+                return 9999  # Not enough data yet, assume speech
             
-            data = wf.readframes(CHUNK_SIZE)
-            while data:
-                stream.write(data)
-                data = wf.readframes(CHUNK_SIZE)
+            wf.setpos(n_frames - tail_frames)
+            data = wf.readframes(tail_frames)
             
-            stream.stop_stream()
-            stream.close()
-    
-    def play_sound(self, name: str):
-        """Play a named sound effect."""
-        sound_path = self.sounds_dir / f"{name}.wav"
-        if sound_path.exists():
-            self.play_file(str(sound_path))
-        else:
-            logger.warning(f"Sound not found: {sound_path}")
-    
-    def cleanup(self):
-        """Release resources."""
-        if self._pyaudio is not None:
-            self._pyaudio.terminate()
-            self._pyaudio = None
-    
-    @staticmethod
-    def list_devices():
-        """List available audio output devices."""
-        try:
-            import pyaudio
-            p = pyaudio.PyAudio()
-            print("Audio output devices:")
-            for i in range(p.get_device_count()):
-                info = p.get_device_info_by_index(i)
-                if info['maxOutputChannels'] > 0:
-                    print(f"  [{i}] {info['name']}")
-            p.terminate()
-        except ImportError:
-            print("PyAudio not installed")
+            samples = struct.unpack(f"<{tail_frames}h", data)
+            rms = math.sqrt(sum(s * s for s in samples) / len(samples))
+            return rms
+    except Exception:
+        return 9999  # Assume speech on error
 
 
-if __name__ == "__main__":
-    print("=== Audio Devices ===\n")
-    AudioRecorder.list_devices()
-    print()
-    AudioPlayer.list_devices()
+def has_speech(wav_path: str, threshold: float = 200) -> bool:
+    """Check if a WAV file contains speech (not just silence/noise)."""
+    try:
+        with wave.open(wav_path, "rb") as wf:
+            data = wf.readframes(wf.getnframes())
+            if len(data) < 100:
+                return False
+            samples = struct.unpack(f"<{len(data) // 2}h", data)
+            rms = math.sqrt(sum(s * s for s in samples) / len(samples))
+            return rms > threshold
+    except Exception:
+        return False
+
+
+def play(wav_path: str):
+    """Play a WAV file through the USB speaker."""
+    logger.info("🔊 Playing audio...")
+    subprocess.run(
+        ["aplay", "-D", config.SPEAKER_DEVICE, wav_path],
+        check=True,
+        capture_output=True,
+    )
+
+
+def play_beep():
+    """Play a short beep to indicate listening."""
+    # Generate a simple beep tone
+    beep_path = str(config.TMP_DIR / "beep.wav")
+    
+    if not Path(beep_path).exists():
+        _generate_beep(beep_path)
+    
+    play(beep_path)
+
+
+def _generate_beep(path: str, freq: int = 880, duration: float = 0.15):
+    """Generate a simple beep WAV file."""
+    sample_rate = 16000
+    n_samples = int(sample_rate * duration)
+    
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        
+        for i in range(n_samples):
+            t = i / sample_rate
+            # Simple sine wave with fade out
+            fade = 1.0 - (i / n_samples)
+            sample = int(16000 * fade * math.sin(2 * math.pi * freq * t))
+            wf.writeframes(struct.pack("<h", sample))

@@ -1,152 +1,168 @@
 #!/usr/bin/env python3
 """
-Claudinho - Voice Assistant
-===========================
+Claudinho - DIY Voice Assistant
+================================
 
-Main entry point for the Claudinho voice assistant.
-Orchestrates wake word detection, STT, LLM, and TTS.
+Wake word → Record → Whisper STT → Claude → Piper TTS → Speaker
+
+Hardware: Raspberry Pi 5, USB mic, USB speaker
 """
 
 import argparse
 import logging
 import signal
 import sys
-from pathlib import Path
 
-from wake_word import WakeWordDetector
-from stt import SpeechToText
+import config
+import audio
+import stt
+import tts
 from assistant import Assistant
-from tts import TextToSpeech
-from audio import AudioPlayer, AudioRecorder
+from wake_word import WakeWordDetector
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
 
-class Claudinho:
-    """Main voice assistant class."""
+def setup():
+    """Create temp dirs and verify components exist."""
+    config.TMP_DIR.mkdir(parents=True, exist_ok=True)
     
-    def __init__(self, config_path: str = "config/config.yaml"):
-        self.config_path = config_path
-        self.running = False
-        
-        # Initialize components (lazy loaded)
-        self._wake_word = None
-        self._stt = None
-        self._assistant = None
-        self._tts = None
-        self._recorder = None
-        self._player = None
+    # Check whisper
+    if not config.WHISPER_CLI.exists():
+        logger.error(f"Whisper CLI not found: {config.WHISPER_CLI}")
+        logger.error("Build it: cd ~/whisper.cpp && make -j4")
+        sys.exit(1)
     
-    @property
-    def wake_word(self) -> WakeWordDetector:
-        if self._wake_word is None:
-            self._wake_word = WakeWordDetector()
-        return self._wake_word
+    if not config.WHISPER_MODEL.exists():
+        logger.error(f"Whisper model not found: {config.WHISPER_MODEL}")
+        logger.error("Download: cd ~/whisper.cpp && ./models/download-ggml-model.sh base")
+        sys.exit(1)
     
-    @property
-    def stt(self) -> SpeechToText:
-        if self._stt is None:
-            self._stt = SpeechToText()
-        return self._stt
+    # Check piper
+    if not config.PIPER_BIN.exists():
+        logger.error(f"Piper not found: {config.PIPER_BIN}")
+        sys.exit(1)
     
-    @property
-    def assistant(self) -> Assistant:
-        if self._assistant is None:
-            self._assistant = Assistant()
-        return self._assistant
+    # Check at least one voice
+    has_voice = any(p.exists() for p in config.PIPER_VOICES.values())
+    if not has_voice:
+        logger.error("No Piper voice models found!")
+        sys.exit(1)
     
-    @property
-    def tts(self) -> TextToSpeech:
-        if self._tts is None:
-            self._tts = TextToSpeech()
-        return self._tts
+    logger.info("✅ All components verified")
+
+
+def conversation_turn(assistant: Assistant):
+    """Handle one conversation turn: record → transcribe → think → speak."""
     
-    @property
-    def recorder(self) -> AudioRecorder:
-        if self._recorder is None:
-            self._recorder = AudioRecorder()
-        return self._recorder
+    # Record user speech
+    wav_path = str(config.TMP_DIR / "input.wav")
+    result = audio.record_with_vad(wav_path)
     
-    @property
-    def player(self) -> AudioPlayer:
-        if self._player is None:
-            self._player = AudioPlayer()
-        return self._player
+    if not result:
+        logger.info("No speech detected, going back to listening")
+        return
     
-    def handle_conversation(self):
-        """Handle a single conversation turn."""
-        logger.info("🎤 Listening...")
-        
-        # Record user speech
-        audio_data = self.recorder.record_until_silence()
-        
-        # Convert speech to text
-        logger.info("🔄 Transcribing...")
-        text = self.stt.transcribe(audio_data)
-        logger.info(f"📝 User said: {text}")
-        
-        if not text.strip():
-            logger.info("No speech detected")
-            return
-        
-        # Get response from Claude via OpenClaw
-        logger.info("🤔 Thinking...")
-        response = self.assistant.chat(text)
-        logger.info(f"💬 Response: {response}")
-        
-        # Convert response to speech
-        logger.info("🔊 Speaking...")
-        audio = self.tts.synthesize(response)
-        self.player.play(audio)
+    # Transcribe with language detection
+    text, language = stt.transcribe(wav_path)
     
-    def run(self):
-        """Main loop - listen for wake word and handle conversations."""
-        self.running = True
-        logger.info("🐱 Claudinho is starting up...")
-        logger.info("Say 'Hey Claudinho' to start a conversation")
-        
-        try:
-            while self.running:
-                # Wait for wake word
-                if self.wake_word.listen():
-                    logger.info("👋 Wake word detected!")
-                    self.player.play_sound("listening")
-                    self.handle_conversation()
-        except KeyboardInterrupt:
-            logger.info("Shutting down...")
-        finally:
-            self.cleanup()
+    if not text.strip():
+        logger.info("Empty transcription, going back to listening")
+        return
     
-    def cleanup(self):
-        """Clean up resources."""
-        self.running = False
-        if self._wake_word:
-            self._wake_word.cleanup()
-        if self._recorder:
-            self._recorder.cleanup()
+    logger.info(f"📝 [{language}] User: {text}")
+    
+    # Get response from Claude
+    logger.info("🤔 Thinking...")
+    response = assistant.chat(text)
+    logger.info(f"💬 Claudinho: {response}")
+    
+    # Synthesize and play response
+    response_wav = tts.synthesize(response, language=language)
+    if response_wav:
+        audio.play(response_wav)
+
+
+def run_assistant():
+    """Main loop: wake word → conversation → repeat."""
+    setup()
+    
+    logger.info("🐱 Claudinho starting up...")
+    
+    # Initialize components
+    assistant = Assistant()
+    detector = WakeWordDetector()
+    
+    # Play startup sound
+    audio.play_beep()
+    
+    logger.info(f"👂 Listening for wake word (say '{config.WAKE_WORD_MODEL}')...")
+    logger.info("Press Ctrl+C to stop\n")
+    
+    running = True
+    
+    def stop(sig, frame):
+        nonlocal running
+        running = False
+    
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    
+    try:
+        while running:
+            if detector.listen():
+                logger.info("👋 Wake word detected!")
+                audio.play_beep()
+                conversation_turn(assistant)
+                logger.info(f"👂 Listening for wake word...\n")
+    finally:
+        detector.cleanup()
+        logger.info("👋 Claudinho stopped")
+
+
+def run_no_wake():
+    """Run without wake word — just press Enter to talk."""
+    setup()
+    
+    logger.info("🐱 Claudinho (no wake word mode)")
+    logger.info("Press Enter to start recording, Ctrl+C to quit\n")
+    
+    assistant = Assistant()
+    
+    try:
+        while True:
+            input("⏎  Press Enter to speak...")
+            audio.play_beep()
+            conversation_turn(assistant)
+            print()
+    except (KeyboardInterrupt, EOFError):
         logger.info("👋 Claudinho stopped")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Claudinho Voice Assistant")
-    parser.add_argument("--config", default="config/config.yaml", help="Config file path")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--no-wake", action="store_true",
+        help="Skip wake word — press Enter to talk"
+    )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Enable debug logging"
+    )
     args = parser.parse_args()
     
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
     
-    # Handle graceful shutdown
-    claudinho = Claudinho(config_path=args.config)
-    signal.signal(signal.SIGINT, lambda s, f: setattr(claudinho, 'running', False))
-    signal.signal(signal.SIGTERM, lambda s, f: setattr(claudinho, 'running', False))
-    
-    claudinho.run()
+    if args.no_wake:
+        run_no_wake()
+    else:
+        run_assistant()
 
 
 if __name__ == "__main__":

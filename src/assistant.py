@@ -2,133 +2,75 @@
 Assistant
 =========
 
-Interfaces with OpenClaw running locally on the Pi.
-Sends transcribed text, receives response text.
+Handles conversation with Claude via Anthropic SDK.
+Maintains conversation history within a session.
 """
 
 import logging
-import subprocess
-import json
-from typing import Optional
+import os
+
+import anthropic
+
+import config
 
 logger = logging.getLogger(__name__)
 
 
 class Assistant:
-    """Communicates with OpenClaw for LLM responses."""
-
-    def __init__(
-        self,
-        gateway_url: str = "http://localhost:18789",
-        gateway_token: Optional[str] = None,
-    ):
-        """
-        Initialize assistant.
-
-        OpenClaw runs on the Pi as a gateway service.
-        We send messages via the local API.
-
-        Args:
-            gateway_url: OpenClaw gateway URL (local).
-            gateway_token: Gateway auth token.
-        """
-        self.gateway_url = gateway_url
-        self.gateway_token = gateway_token or self._read_token()
-        self._conversation_history = []
-
-    def _read_token(self) -> str:
-        """Read gateway token from OpenClaw config."""
-        import yaml
-        from pathlib import Path
-
-        config_path = Path.home() / ".openclaw" / "openclaw.json"
-        if config_path.exists():
-            data = json.loads(config_path.read_text())
-            token = data.get("gateway", {}).get("auth", {}).get("token", "")
-            if token and token != "__OPENCLAW_REDACTED__":
-                return token
-
-        # Fallback: try environment variable
-        import os
-        return os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
-
+    """Chat with Claude using the Anthropic Python SDK."""
+    
+    def __init__(self):
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY not set. Export it:\n"
+                "  export ANTHROPIC_API_KEY=sk-ant-..."
+            )
+        
+        self.client = anthropic.Anthropic(api_key=api_key)
+        self.conversation: list[dict] = []
+        self.max_history = 20  # keep last N turns to manage context
+    
     def chat(self, text: str) -> str:
         """
-        Send text to OpenClaw and get a response.
-
-        Uses the OpenClaw wake API to inject a message
-        and get a response from the active agent.
-
+        Send a message and get a response.
+        
         Args:
             text: User's transcribed speech.
-
+            
         Returns:
-            Assistant's response text.
+            Claude's response text.
         """
+        # Add user message
+        self.conversation.append({"role": "user", "content": text})
+        
+        # Trim history if too long
+        if len(self.conversation) > self.max_history:
+            self.conversation = self.conversation[-self.max_history:]
+        
         try:
-            import requests
-
-            # Use the wake endpoint to send a voice message
-            response = requests.post(
-                f"{self.gateway_url}/api/wake",
-                headers={
-                    "Authorization": f"Bearer {self.gateway_token}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": f"[Voice] {text}",
-                    "mode": "now",
-                },
-                timeout=60,
+            response = self.client.messages.create(
+                model=config.ANTHROPIC_MODEL,
+                max_tokens=300,  # keep responses short for voice
+                system=config.SYSTEM_PROMPT,
+                messages=self.conversation,
             )
-
-            if response.status_code == 200:
-                data = response.json()
-                return data.get("reply", data.get("message", "I heard you but couldn't process that."))
-            else:
-                logger.error(f"OpenClaw API error: {response.status_code} {response.text}")
-                return "Sorry, I'm having trouble connecting to my brain."
-
-        except requests.exceptions.ConnectionError:
-            logger.error("Cannot connect to OpenClaw gateway. Is it running?")
-            return "Sorry, my brain isn't responding right now."
+            
+            reply = response.content[0].text
+            
+            # Add assistant response to history
+            self.conversation.append({"role": "assistant", "content": reply})
+            
+            return reply
+            
+        except anthropic.APIError as e:
+            logger.error(f"Anthropic API error: {e}")
+            return "Sorry, I'm having trouble thinking right now."
         except Exception as e:
             logger.error(f"Assistant error: {e}")
             return "Sorry, something went wrong."
-
-    def chat_cli(self, text: str) -> str:
-        """
-        Alternative: use openclaw CLI directly.
-        Simpler but spawns a process each time.
-        """
-        try:
-            result = subprocess.run(
-                ["openclaw", "gateway", "wake", "--text", f"[Voice] {text}", "--mode", "now"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-
-            if result.returncode == 0:
-                return result.stdout.strip()
-            else:
-                logger.error(f"CLI error: {result.stderr}")
-                return "Sorry, something went wrong."
-
-        except FileNotFoundError:
-            logger.error("openclaw CLI not found")
-            return "OpenClaw is not installed."
-        except Exception as e:
-            logger.error(f"CLI error: {e}")
-            return "Sorry, something went wrong."
-
-
-if __name__ == "__main__":
-    assistant = Assistant()
-    print("Testing assistant (type 'quit' to exit):")
-    while True:
-        text = input("\nYou: ")
-        if text.lower() in ("quit", "exit", "q"):
-            break
-        response = assistant.chat(text)
-        print(f"Claudinho: {response}")
+    
+    def reset(self):
+        """Clear conversation history."""
+        self.conversation.clear()
+        logger.info("Conversation history cleared")
