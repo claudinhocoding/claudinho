@@ -1,0 +1,28 @@
+[Unit]
+Description=Claudinho Voice Assistant
+After=network.target openclaw-gateway.service
+Wants=openclaw-gateway.service
+
+[Service]
+Type=simple
+User=claudinho
+Group=claudinho
+WorkingDirectory=/home/claudinho/claudinho
+ExecStart=/home/claudinho/claudinho/venv/bin/python src/main.py
+Restart=on-failure
+RestartSec=5
+
+# Audio access
+SupplementaryGroups=audio
+
+# Suppress ALSA/PyAudio warning spam
+Environment=PYTHONUNBUFFERED=1
+Environment=ALSA_CONFIG_PATH=/dev/null
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claudinho
+
+[Install]
+WantedBy=multi-user.target

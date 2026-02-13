@@ -5,7 +5,9 @@ Audio Utilities
 Record and play audio via PyAudio (with silence detection) and aplay.
 """
 
+import ctypes
 import logging
+import os
 import subprocess
 import wave
 import struct
@@ -13,6 +15,20 @@ import math
 from pathlib import Path
 
 import numpy as np
+
+# Suppress ALSA warnings before importing PyAudio
+# (ALSA dumps "underrun occurred" / "Unknown PCM" spam to stderr)
+_ERROR_HANDLER = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int,
+                                   ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p)
+def _null_error_handler(filename, line, function, err, fmt):
+    pass
+_c_null_handler = _ERROR_HANDLER(_null_error_handler)
+try:
+    _asound = ctypes.cdll.LoadLibrary("libasound.so.2")
+    _asound.snd_lib_error_set_handler(_c_null_handler)
+except OSError:
+    pass  # Not on Linux or ALSA not available
+
 import pyaudio
 
 import config

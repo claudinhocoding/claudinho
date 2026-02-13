@@ -9,11 +9,25 @@ Note: USB mic only supports 44100 Hz natively, so we record
 at 44100 Hz and downsample to 16000 Hz for openWakeWord.
 """
 
+import ctypes
 import logging
+
 import numpy as np
 from scipy.signal import resample
 
 import config
+
+# Suppress ALSA warnings before PyAudio gets imported
+_ERROR_HANDLER = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int,
+                                   ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p)
+def _null_error_handler(filename, line, function, err, fmt):
+    pass
+_c_null_handler = _ERROR_HANDLER(_null_error_handler)
+try:
+    _asound = ctypes.cdll.LoadLibrary("libasound.so.2")
+    _asound.snd_lib_error_set_handler(_c_null_handler)
+except OSError:
+    pass
 
 logger = logging.getLogger(__name__)
 
