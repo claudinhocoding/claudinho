@@ -4,17 +4,25 @@ Wake Word Detection
 
 Uses openWakeWord with PyAudio for continuous listening.
 Detects "Hey Jarvis" (swap to custom "Hey Claudinho" later).
+
+Note: USB mic only supports 44100 Hz natively, so we record
+at 44100 Hz and downsample to 16000 Hz for openWakeWord.
 """
 
 import logging
 import numpy as np
+from scipy.signal import resample
 
 import config
 
 logger = logging.getLogger(__name__)
 
-# openWakeWord expects 80ms chunks at 16kHz
+# openWakeWord expects 80ms chunks at 16kHz = 1280 samples
 OWW_CHUNK_SIZE = 1280
+# Record at 44100 Hz (USB mic native rate)
+MIC_RATE = 44100
+# Equivalent chunk size at 44100 Hz for 80ms
+MIC_CHUNK_SIZE = int(MIC_RATE * 0.08)  # 3528 samples
 
 
 class WakeWordDetector:
@@ -44,7 +52,7 @@ class WakeWordDetector:
         )
         logger.info(f"Wake word model loaded: {config.WAKE_WORD_MODEL}")
         
-        # Open mic stream
+        # Open mic stream at native 44100 Hz
         self._pyaudio = pyaudio.PyAudio()
         
         # Find the USB mic device index
@@ -53,12 +61,12 @@ class WakeWordDetector:
         self._stream = self._pyaudio.open(
             format=pyaudio.paInt16,
             channels=1,
-            rate=16000,
+            rate=MIC_RATE,
             input=True,
             input_device_index=device_index,
-            frames_per_buffer=OWW_CHUNK_SIZE,
+            frames_per_buffer=MIC_CHUNK_SIZE,
         )
-        logger.info("Audio stream opened for wake word detection")
+        logger.info("Audio stream opened for wake word detection (44100 Hz → 16000 Hz)")
     
     def _find_usb_mic(self) -> int:
         """Find the USB microphone PyAudio device index."""
@@ -73,6 +81,11 @@ class WakeWordDetector:
         logger.warning("USB mic not found by name, using default input")
         return None
     
+    def _downsample(self, audio_44100: np.ndarray) -> np.ndarray:
+        """Downsample from 44100 Hz to 16000 Hz."""
+        target_length = int(len(audio_44100) * 16000 / 44100)
+        return resample(audio_44100, target_length).astype(np.int16)
+    
     def listen(self) -> bool:
         """
         Listen for one chunk and check for wake word.
@@ -80,10 +93,14 @@ class WakeWordDetector:
         """
         self._initialize()
         
-        audio_bytes = self._stream.read(OWW_CHUNK_SIZE, exception_on_overflow=False)
-        audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
+        # Read at 44100 Hz
+        audio_bytes = self._stream.read(MIC_CHUNK_SIZE, exception_on_overflow=False)
+        audio_44100 = np.frombuffer(audio_bytes, dtype=np.int16)
         
-        prediction = self._model.predict(audio_data)
+        # Downsample to 16000 Hz for openWakeWord
+        audio_16000 = self._downsample(audio_44100)
+        
+        prediction = self._model.predict(audio_16000)
         
         for model_name, score in prediction.items():
             if score > config.WAKE_WORD_THRESHOLD:

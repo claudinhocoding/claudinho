@@ -9,8 +9,8 @@ Edit this file to match your Pi setup.
 from pathlib import Path
 
 # ── Audio Devices (ALSA) ──────────────────────────────────────
-MIC_DEVICE = "default"          # Routed via ~/.asoundrc to USB mic
-SPEAKER_DEVICE = "default"      # Routed via ~/.asoundrc to USB speaker
+MIC_DEVICE = "plughw:0,0"       # USB PnP Sound Device (card 0)
+SPEAKER_DEVICE = "plughw:3,0"   # UACDemoV1.0 (card 3)
 SAMPLE_RATE = 16000
 CHANNELS = 1
 
