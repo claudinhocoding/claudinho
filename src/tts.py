@@ -2,111 +2,166 @@
 Text to Speech
 ==============
 
-Uses KittenTTS for local speech synthesis.
-Lightweight model optimized for CPU/Pi 5.
+Uses Piper TTS for local speech synthesis.
+Fast, lightweight, runs great on Pi 5.
+
+https://github.com/rhasspy/piper
 """
 
 import logging
+import subprocess
+import tempfile
+import wave
+from pathlib import Path
 from typing import Optional
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Default voice - good quality, fast on Pi 5
+DEFAULT_VOICE = "en_US-lessac-medium"
+
 
 class TextToSpeech:
-    """Synthesizes speech from text using KittenTTS."""
-    
-    # Available voices
-    VOICES = [
-        'expr-voice-2-m', 'expr-voice-2-f',
-        'expr-voice-3-m', 'expr-voice-3-f',
-        'expr-voice-4-m', 'expr-voice-4-f',
-        'expr-voice-5-m', 'expr-voice-5-f',
-    ]
-    
+    """Synthesizes speech from text using Piper TTS."""
+
     def __init__(
         self,
-        model: str = "KittenML/kitten-tts-nano-0.2",
-        voice: str = "expr-voice-2-f",
+        voice: str = DEFAULT_VOICE,
+        piper_path: Optional[str] = None,
+        speed: float = 1.0,
     ):
-        self.model_name = model
+        """
+        Initialize Piper TTS.
+
+        Args:
+            voice: Piper voice name (e.g., 'en_US-lessac-medium').
+                   See https://rhasspy.github.io/piper-samples/ for samples.
+            piper_path: Path to piper binary. None = find in PATH.
+            speed: Speech speed multiplier (1.0 = normal).
+        """
         self.voice = voice
-        self._model = None
-        
-        if voice not in self.VOICES:
-            logger.warning(f"Unknown voice '{voice}', using default")
-            self.voice = "expr-voice-2-f"
-    
-    def _initialize(self):
-        """Lazy initialization of KittenTTS model."""
-        if self._model is not None:
-            return
-        
-        try:
-            from kittentts import KittenTTS
-        except ImportError:
-            raise ImportError(
-                "KittenTTS not installed. Run:\n"
-                "pip install https://github.com/KittenML/KittenTTS/releases/download/0.1/kittentts-0.1.0-py3-none-any.whl"
-            )
-        
-        logger.info(f"Loading KittenTTS model: {self.model_name}")
-        self._model = KittenTTS(self.model_name)
-        logger.info("KittenTTS model loaded")
-    
-    def synthesize(self, text: str, voice: Optional[str] = None) -> np.ndarray:
+        self.speed = speed
+        self.piper_path = piper_path or self._find_piper()
+        self._sample_rate = 22050  # Piper default
+
+    def _find_piper(self) -> str:
+        """Find piper binary."""
+        # Check if installed via pip (piper-tts package)
+        result = subprocess.run(
+            ["which", "piper"], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+
+        # Check common install paths
+        common_paths = [
+            Path.home() / "piper" / "piper",
+            Path("/usr/local/bin/piper"),
+            Path("/opt/piper/piper"),
+        ]
+        for path in common_paths:
+            if path.exists():
+                return str(path)
+
+        raise FileNotFoundError(
+            "Piper TTS not found. Install with:\n"
+            "  pip install piper-tts\n"
+            "Or download from: https://github.com/rhasspy/piper/releases"
+        )
+
+    def synthesize(self, text: str) -> np.ndarray:
         """
         Synthesize speech from text.
-        
+
         Args:
-            text: Text to synthesize.
-            voice: Voice to use (optional, uses default if not specified).
-            
+            text: Text to speak.
+
         Returns:
-            Audio data as numpy array (24kHz sample rate).
+            Audio data as numpy array (int16, 22050Hz).
         """
-        self._initialize()
-        
-        voice = voice or self.voice
-        
         if not text.strip():
             logger.warning("Empty text, returning silence")
-            return np.zeros(24000, dtype=np.float32)  # 1 second of silence
-        
-        logger.debug(f"Synthesizing: '{text[:50]}...' with voice {voice}")
-        
-        audio = self._model.generate(text, voice=voice)
-        
-        return audio
-    
-    def save(self, audio: np.ndarray, path: str):
-        """Save audio to WAV file."""
+            return np.zeros(self._sample_rate, dtype=np.int16)
+
+        logger.debug(f"Synthesizing: '{text[:80]}...'")
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+
         try:
-            import soundfile as sf
-            sf.write(path, audio, 24000)
-            logger.debug(f"Saved audio to {path}")
-        except ImportError:
-            raise ImportError("soundfile not installed. Run: pip install soundfile")
-    
+            # Run piper
+            cmd = [
+                self.piper_path,
+                "--model", self.voice,
+                "--output_file", tmp_path,
+            ]
+
+            if self.speed != 1.0:
+                cmd.extend(["--length_scale", str(1.0 / self.speed)])
+
+            result = subprocess.run(
+                cmd,
+                input=text,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Piper error: {result.stderr}")
+                return np.zeros(self._sample_rate, dtype=np.int16)
+
+            # Read the generated audio
+            with wave.open(tmp_path, "rb") as wf:
+                self._sample_rate = wf.getframerate()
+                audio_data = np.frombuffer(
+                    wf.readframes(wf.getnframes()), dtype=np.int16
+                )
+
+            return audio_data
+
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    def synthesize_to_file(self, text: str, output_path: str):
+        """Synthesize and save directly to WAV file."""
+        cmd = [
+            self.piper_path,
+            "--model", self.voice,
+            "--output_file", output_path,
+        ]
+
+        result = subprocess.run(
+            cmd, input=text, capture_output=True, text=True, timeout=30
+        )
+
+        if result.returncode != 0:
+            logger.error(f"Piper error: {result.stderr}")
+
     @property
     def sample_rate(self) -> int:
         """Audio sample rate."""
-        return 24000
-    
-    @classmethod
-    def list_voices(cls):
-        """Print available voices."""
-        print("Available KittenTTS voices:")
-        for voice in cls.VOICES:
-            print(f"  - {voice}")
+        return self._sample_rate
+
+    @staticmethod
+    def list_voices():
+        """List installed Piper voices."""
+        result = subprocess.run(
+            ["piper", "--list-voices"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print(result.stdout)
+        else:
+            print("Run 'piper --list-voices' to see available voices")
+            print("Download voices from: https://rhasspy.github.io/piper-samples/")
 
 
 if __name__ == "__main__":
-    # Test TTS
-    TextToSpeech.list_voices()
-    
-    print("\nTesting synthesis...")
+    print("Testing Piper TTS...")
     tts = TextToSpeech()
     audio = tts.synthesize("Hello! I am Claudinho, your voice assistant.")
-    tts.save(audio, "test_output.wav")
-    print("Saved to test_output.wav")
+    print(f"Generated {len(audio)} samples at {tts.sample_rate}Hz")
+    print(f"Duration: {len(audio) / tts.sample_rate:.1f}s")

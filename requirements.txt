@@ -1,23 +1,22 @@
-# Claudinho - Voice Assistant Dependencies
+# Claudinho Voice Assistant - Dependencies
+# ==========================================
 
-# Audio
-pyaudio>=0.2.13
+# Wake word detection
+openwakeword>=0.6.0
+
+# Audio I/O
+pyaudio>=0.2.14
 numpy>=1.24.0
 soundfile>=0.12.0
 
-# Wake word detection (Porcupine)
-pvporcupine>=3.0.0
-pvrecorder>=1.2.0
+# Speech to Text (Whisper.cpp called as subprocess - no Python package needed)
+# Install whisper.cpp separately: https://github.com/ggerganov/whisper.cpp
 
-# Text to Speech (KittenTTS)
-# Install manually:
-# pip install https://github.com/KittenML/KittenTTS/releases/download/0.1/kittentts-0.1.0-py3-none-any.whl
+# Text to Speech
+piper-tts>=1.2.0
 
-# HTTP requests (for OpenClaw/API)
-requests>=2.28.0
+# OpenClaw integration (called via HTTP API or CLI)
+requests>=2.31.0
 
-# Configuration
+# Config
 pyyaml>=6.0
-
-# Development
-pytest>=7.0.0

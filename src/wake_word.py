@@ -2,132 +2,196 @@
 Wake Word Detection
 ===================
 
-Uses Porcupine for wake word detection.
+Uses openWakeWord for local wake word detection.
 Listens for "Hey Claudinho" or configured wake phrase.
+Runs continuously with minimal CPU usage (~1%).
+
+https://github.com/dscripka/openWakeWord
 """
 
 import logging
-import struct
+import numpy as np
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Porcupine will be imported at runtime
-# pip install pvporcupine pvrecorder
+# Audio parameters matching openWakeWord requirements
+SAMPLE_RATE = 16000
+CHUNK_SIZE = 1280  # openWakeWord expects 80ms chunks at 16kHz
 
 
 class WakeWordDetector:
-    """Detects wake word using Porcupine."""
-    
+    """Detects wake word using openWakeWord."""
+
     def __init__(
         self,
-        access_key: Optional[str] = None,
-        keyword: str = "jarvis",  # Built-in keyword, or path to custom .ppn
-        sensitivity: float = 0.5,
-        device_index: int = -1,  # -1 = default device
+        model_path: Optional[str] = None,
+        threshold: float = 0.5,
+        device_index: Optional[int] = None,
     ):
-        self.access_key = access_key
-        self.keyword = keyword
-        self.sensitivity = sensitivity
+        """
+        Initialize wake word detector.
+
+        Args:
+            model_path: Path to custom .onnx model, or None for built-in models.
+                        Train custom "Hey Claudinho" at: https://github.com/dscripka/openWakeWord#training
+            threshold: Detection threshold (0.0-1.0). Higher = fewer false positives.
+            device_index: Audio input device index. None = default mic.
+        """
+        self.model_path = model_path
+        self.threshold = threshold
         self.device_index = device_index
-        
-        self._porcupine = None
-        self._recorder = None
-    
+
+        self._oww_model = None
+        self._pyaudio = None
+        self._stream = None
+
     def _initialize(self):
-        """Lazy initialization of Porcupine."""
-        if self._porcupine is not None:
+        """Lazy initialization of openWakeWord and audio stream."""
+        if self._oww_model is not None:
             return
-        
+
         try:
-            import pvporcupine
-            from pvrecorder import PvRecorder
+            import openwakeword
+            from openwakeword.model import Model
         except ImportError:
             raise ImportError(
-                "Porcupine not installed. Run: pip install pvporcupine pvrecorder"
+                "openWakeWord not installed. Run: pip install openwakeword"
             )
-        
-        # Get access key from environment if not provided
-        if not self.access_key:
-            import os
-            self.access_key = os.environ.get("PORCUPINE_ACCESS_KEY")
-        
-        if not self.access_key:
-            raise ValueError(
-                "Porcupine access key required. "
-                "Set PORCUPINE_ACCESS_KEY env var or pass access_key parameter. "
-                "Get a free key at: https://picovoice.ai/"
+
+        try:
+            import pyaudio
+        except ImportError:
+            raise ImportError(
+                "PyAudio not installed. Run: pip install pyaudio"
             )
-        
-        # Initialize Porcupine
-        self._porcupine = pvporcupine.create(
-            access_key=self.access_key,
-            keywords=[self.keyword] if not self.keyword.endswith('.ppn') else None,
-            keyword_paths=[self.keyword] if self.keyword.endswith('.ppn') else None,
-            sensitivities=[self.sensitivity],
+
+        # Download default models if needed
+        openwakeword.utils.download_models()
+
+        # Initialize model
+        if self.model_path:
+            # Custom trained model (e.g., "Hey Claudinho")
+            self._oww_model = Model(
+                wakeword_models=[self.model_path],
+                inference_framework="onnx",
+            )
+            logger.info(f"Loaded custom wake word model: {self.model_path}")
+        else:
+            # Use built-in "hey jarvis" as placeholder until custom model is trained
+            self._oww_model = Model(
+                wakeword_models=["hey_jarvis_v0.1"],
+                inference_framework="onnx",
+            )
+            logger.info("Using built-in 'hey jarvis' model (train custom model for 'Hey Claudinho')")
+
+        # Initialize audio stream
+        self._pyaudio = pyaudio.PyAudio()
+        self._stream = self._pyaudio.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=SAMPLE_RATE,
+            input=True,
+            input_device_index=self.device_index,
+            frames_per_buffer=CHUNK_SIZE,
         )
-        
-        # Initialize recorder
-        self._recorder = PvRecorder(
-            device_index=self.device_index,
-            frame_length=self._porcupine.frame_length,
-        )
-        
-        logger.info(f"Wake word detector initialized: '{self.keyword}'")
-        logger.info(f"Using audio device: {self._recorder.selected_device}")
-    
+
+        logger.info(f"Wake word detector initialized (threshold={self.threshold})")
+
     def listen(self) -> bool:
         """
-        Listen for wake word.
-        
+        Listen for one audio chunk and check for wake word.
+
+        Call this in a loop. Returns True when wake word is detected.
+
         Returns:
             True if wake word detected, False otherwise.
         """
         self._initialize()
-        
-        if not self._recorder.is_recording:
-            self._recorder.start()
-        
-        # Read audio frame
-        pcm = self._recorder.read()
-        
-        # Check for wake word
-        keyword_index = self._porcupine.process(pcm)
-        
-        if keyword_index >= 0:
-            return True
-        
+
+        # Read audio chunk
+        audio_bytes = self._stream.read(CHUNK_SIZE, exception_on_overflow=False)
+        audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
+
+        # Run detection
+        prediction = self._oww_model.predict(audio_data)
+
+        # Check all model predictions against threshold
+        for model_name, score in prediction.items():
+            if score > self.threshold:
+                logger.info(f"Wake word detected: {model_name} (score={score:.3f})")
+                # Reset model state to avoid repeated triggers
+                self._oww_model.reset()
+                return True
+
         return False
-    
+
+    def listen_blocking(self, timeout: Optional[float] = None) -> bool:
+        """
+        Block until wake word is detected or timeout.
+
+        Args:
+            timeout: Maximum seconds to listen. None = listen forever.
+
+        Returns:
+            True if wake word detected, False if timed out.
+        """
+        import time
+
+        start = time.time()
+
+        while True:
+            if self.listen():
+                return True
+
+            if timeout and (time.time() - start) > timeout:
+                return False
+
     def cleanup(self):
         """Release resources."""
-        if self._recorder is not None:
-            self._recorder.stop()
-            self._recorder.delete()
-            self._recorder = None
-        
-        if self._porcupine is not None:
-            self._porcupine.delete()
-            self._porcupine = None
-        
+        if self._stream is not None:
+            self._stream.stop_stream()
+            self._stream.close()
+            self._stream = None
+
+        if self._pyaudio is not None:
+            self._pyaudio.terminate()
+            self._pyaudio = None
+
+        self._oww_model = None
         logger.info("Wake word detector cleaned up")
-    
+
     def __del__(self):
         self.cleanup()
 
 
-# List available audio devices
 def list_audio_devices():
-    """Print available audio devices for debugging."""
+    """Print available audio input devices for debugging."""
     try:
-        from pvrecorder import PvRecorder
-        devices = PvRecorder.get_available_devices()
-        print("Available audio devices:")
-        for i, device in enumerate(devices):
-            print(f"  [{i}] {device}")
+        import pyaudio
+        p = pyaudio.PyAudio()
+        print("Available audio input devices:")
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+            if info["maxInputChannels"] > 0:
+                print(f"  [{i}] {info['name']} (rate={int(info['defaultSampleRate'])})")
+        p.terminate()
     except ImportError:
-        print("pvrecorder not installed")
+        print("PyAudio not installed. Run: pip install pyaudio")
 
 
 if __name__ == "__main__":
     list_audio_devices()
+    print()
+    print("Testing wake word detection (say 'Hey Jarvis')...")
+    print("Press Ctrl+C to stop\n")
+
+    detector = WakeWordDetector(threshold=0.5)
+    try:
+        while True:
+            if detector.listen():
+                print("🔔 Wake word detected!")
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        detector.cleanup()
