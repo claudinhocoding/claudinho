@@ -110,8 +110,8 @@ class WakeWordDetector:
         
         return False
     
-    def cleanup(self):
-        """Release audio resources."""
+    def pause(self):
+        """Release the mic so arecord can use it."""
         if self._stream:
             self._stream.stop_stream()
             self._stream.close()
@@ -119,5 +119,27 @@ class WakeWordDetector:
         if self._pyaudio:
             self._pyaudio.terminate()
             self._pyaudio = None
+        logger.debug("Mic released for recording")
+    
+    def resume(self):
+        """Reopen the mic stream for wake word listening."""
+        if self._model is None:
+            return  # Not initialized yet
+        import pyaudio
+        self._pyaudio = pyaudio.PyAudio()
+        device_index = self._find_usb_mic()
+        self._stream = self._pyaudio.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=MIC_RATE,
+            input=True,
+            input_device_index=device_index,
+            frames_per_buffer=MIC_CHUNK_SIZE,
+        )
+        logger.debug("Mic reopened for wake word")
+
+    def cleanup(self):
+        """Release all resources."""
+        self.pause()
         self._model = None
         logger.info("Wake word detector cleaned up")

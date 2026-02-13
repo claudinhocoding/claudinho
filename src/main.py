@@ -117,8 +117,10 @@ def run_assistant():
         while running:
             if detector.listen():
                 logger.info("👋 Wake word detected!")
+                detector.pause()  # release mic for arecord
                 audio.play_beep()
                 conversation_turn(assistant)
+                detector.resume()  # reopen mic for wake word
                 logger.info(f"👂 Listening for wake word...\n")
     finally:
         detector.cleanup()
