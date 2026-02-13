@@ -41,6 +41,33 @@ CHUNK_DURATION = 0.1  # 100ms chunks
 MIC_CHUNK = int(MIC_RATE * CHUNK_DURATION)
 
 
+def _find_usb_device(direction: str = "input") -> str:
+    """
+    Find USB audio device card number dynamically.
+    Returns ALSA device string like 'plughw:1,0'.
+    Survives card number changes across reboots.
+    """
+    import re
+    cmd = "arecord -l" if direction == "input" else "aplay -l"
+    try:
+        result = subprocess.run(cmd.split(), capture_output=True, text=True)
+        for line in result.stdout.splitlines():
+            if "USB" in line and "card" in line:
+                match = re.search(r"card (\d+)", line)
+                if match:
+                    card = match.group(1)
+                    device = f"plughw:{card},0"
+                    logger.info(f"Auto-detected {direction} device: {device} ({line.strip()})")
+                    return device
+    except Exception as e:
+        logger.warning(f"Device detection failed: {e}")
+    
+    # Fallback to config
+    fallback = config.MIC_DEVICE if direction == "input" else config.SPEAKER_DEVICE
+    logger.warning(f"USB {direction} not found, using fallback: {fallback}")
+    return fallback
+
+
 def _open_mic():
     """Open the USB mic via PyAudio. Returns (pa, stream, device_index)."""
     pa = pyaudio.PyAudio()
@@ -172,12 +199,18 @@ def has_speech(wav_path: str, threshold: float = 200) -> bool:
         return False
 
 
+_speaker_device = None
+
 def play(wav_path: str):
     """Play a WAV file through the USB speaker."""
-    logger.info("🔊 Playing audio...")
+    global _speaker_device
+    if _speaker_device is None:
+        _speaker_device = _find_usb_device("output")
+    
+    logger.info(f"🔊 Playing audio on {_speaker_device}...")
     try:
         subprocess.run(
-            ["aplay", "-D", config.SPEAKER_DEVICE, wav_path],
+            ["aplay", "-D", _speaker_device, wav_path],
             check=True,
             capture_output=True,
         )

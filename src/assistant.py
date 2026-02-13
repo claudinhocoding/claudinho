@@ -14,6 +14,14 @@ from config import OPENCLAW_URL, OPENCLAW_TOKEN
 
 logger = logging.getLogger(__name__)
 
+SYSTEM_PROMPT = (
+    "You are Claudinho, a voice assistant running on a Raspberry Pi 5. "
+    "You hear the user through a microphone and speak back through a speaker. "
+    "Keep responses short and conversational — this is spoken audio, not text chat. "
+    "Avoid markdown, bullet points, URLs, or long lists. "
+    "Be natural, helpful, and concise. 1-3 sentences is ideal."
+)
+
 
 class Assistant:
     """Chat with Claude through the local OpenClaw gateway."""
@@ -46,7 +54,10 @@ class Assistant:
                 json={
                     "model": "openclaw",
                     "user": self.session_user,
-                    "messages": [{"role": "user", "content": text}],
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": text},
+                    ],
                 },
                 timeout=60,
             )
