@@ -25,25 +25,15 @@ CHUNK_DURATION = 0.1  # 100ms chunks
 MIC_CHUNK = int(MIC_RATE * CHUNK_DURATION)
 
 
-def record_until_silence(output_path: str) -> str:
-    """
-    Record from mic until user stops speaking.
-    
-    Records at 44100 Hz (mic native), saves as 16kHz WAV for Whisper.
-    Detects silence after speech to know when to stop.
-    """
-    logger.info("🎤 Listening...")
-    
+def _open_mic():
+    """Open the USB mic via PyAudio. Returns (pa, stream, device_index)."""
     pa = pyaudio.PyAudio()
-    
-    # Find USB mic
     device_index = None
     for i in range(pa.get_device_count()):
         info = pa.get_device_info_by_index(i)
         if "usb" in info.get("name", "").lower() and info["maxInputChannels"] > 0:
             device_index = i
             break
-    
     stream = pa.open(
         format=pyaudio.paInt16,
         channels=1,
@@ -52,6 +42,45 @@ def record_until_silence(output_path: str) -> str:
         input_device_index=device_index,
         frames_per_buffer=MIC_CHUNK,
     )
+    return pa, stream
+
+
+def calibrate_noise(stream, duration: float = 0.8) -> float:
+    """
+    Measure ambient noise level for a short period.
+    Returns a threshold = noise_floor * multiplier.
+    """
+    chunks = int(duration / CHUNK_DURATION)
+    rms_values = []
+    
+    for _ in range(chunks):
+        data = stream.read(MIC_CHUNK, exception_on_overflow=False)
+        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+        rms = np.sqrt(np.mean(samples ** 2))
+        rms_values.append(rms)
+    
+    noise_floor = np.mean(rms_values)
+    # Threshold = noise floor * 2.5 (speech is typically 3-10x louder than ambient)
+    threshold = max(noise_floor * 2.5, 300)  # minimum 300 to avoid hypersensitivity
+    logger.info(f"🔇 Noise floor: {noise_floor:.0f} RMS → speech threshold: {threshold:.0f}")
+    return threshold
+
+
+def record_until_silence(output_path: str) -> str:
+    """
+    Record from mic until user stops speaking.
+    
+    1. Calibrates ambient noise level
+    2. Records at 44100 Hz (mic native)
+    3. Stops when silence detected after speech
+    4. Saves as 16kHz WAV for Whisper
+    """
+    logger.info("🎤 Listening...")
+    
+    pa, stream = _open_mic()
+    
+    # Auto-calibrate noise threshold
+    threshold = calibrate_noise(stream)
     
     frames = []
     silent_chunks = 0
@@ -68,7 +97,7 @@ def record_until_silence(output_path: str) -> str:
         samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
         rms = np.sqrt(np.mean(samples ** 2))
         
-        if rms > config.SILENCE_THRESHOLD:
+        if rms > threshold:
             has_speech = True
             silent_chunks = 0
         else:
