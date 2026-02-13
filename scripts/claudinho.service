@@ -15,9 +15,7 @@ RestartSec=5
 # Audio access
 SupplementaryGroups=audio
 
-# Suppress ALSA/PyAudio warning spam
 Environment=PYTHONUNBUFFERED=1
-Environment=ALSA_CONFIG_PATH=/dev/null
 
 # Logging
 StandardOutput=journal

@@ -175,11 +175,14 @@ def has_speech(wav_path: str, threshold: float = 200) -> bool:
 def play(wav_path: str):
     """Play a WAV file through the USB speaker."""
     logger.info("🔊 Playing audio...")
-    subprocess.run(
-        ["aplay", "-D", config.SPEAKER_DEVICE, wav_path],
-        check=True,
-        capture_output=True,
-    )
+    try:
+        subprocess.run(
+            ["aplay", "-D", config.SPEAKER_DEVICE, wav_path],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        logger.error(f"aplay failed: {e.stderr.decode() if e.stderr else e}")
 
 
 def play_beep():
