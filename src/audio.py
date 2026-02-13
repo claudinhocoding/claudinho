@@ -2,8 +2,7 @@
 Audio Utilities
 ===============
 
-Record and play audio using ALSA (arecord/aplay).
-Uses subprocess — simple, reliable, tested on Pi 5.
+Record and play audio via PyAudio (with silence detection) and aplay.
 """
 
 import logging
@@ -11,152 +10,111 @@ import subprocess
 import wave
 import struct
 import math
-import time
 from pathlib import Path
+
+import numpy as np
+import pyaudio
 
 import config
 
 logger = logging.getLogger(__name__)
 
-
-def record_fixed(duration: float, output_path: str) -> str:
-    """Record audio for a fixed duration using arecord."""
-    subprocess.run(
-        [
-            "arecord",
-            "-D", config.MIC_DEVICE,
-            "-f", "S16_LE",
-            "-r", str(config.SAMPLE_RATE),
-            "-c", str(config.CHANNELS),
-            "-d", str(int(duration)),
-            output_path,
-        ],
-        check=True,
-        capture_output=True,
-    )
-    return output_path
+# Mic native rate
+MIC_RATE = 44100
+CHUNK_DURATION = 0.1  # 100ms chunks
+MIC_CHUNK = int(MIC_RATE * CHUNK_DURATION)
 
 
 def record_until_silence(output_path: str) -> str:
     """
-    Record audio until silence is detected.
+    Record from mic until user stops speaking.
     
-    Uses arecord to record max duration, then trims trailing silence.
-    For a voice assistant, this is good enough — Whisper handles
-    trailing silence fine, and we cap at MAX_RECORD_DURATION.
+    Records at 44100 Hz (mic native), saves as 16kHz WAV for Whisper.
+    Detects silence after speech to know when to stop.
     """
-    logger.info("🎤 Recording...")
+    logger.info("🎤 Listening...")
     
-    subprocess.run(
-        [
-            "arecord",
-            "-D", config.MIC_DEVICE,
-            "-f", "S16_LE",
-            "-r", str(config.SAMPLE_RATE),
-            "-c", str(config.CHANNELS),
-            "-d", str(config.MAX_RECORD_DURATION),
-            output_path,
-        ],
-        check=True,
-        capture_output=True,
-    )
+    pa = pyaudio.PyAudio()
     
-    # Check if recording has speech (not just silence)
-    if not has_speech(output_path):
-        logger.info("No speech detected in recording")
-        return ""
-    
-    return output_path
-
-
-def record_with_vad(output_path: str) -> str:
-    """
-    Record with simple voice activity detection.
-    
-    Starts arecord, monitors the file size / audio energy,
-    and kills the process when silence is detected.
-    """
-    logger.info("🎤 Recording (press Ctrl+C or wait for silence)...")
-    
-    proc = subprocess.Popen(
-        [
-            "arecord",
-            "-D", config.MIC_DEVICE,
-            "-f", "S16_LE",
-            "-r", str(config.SAMPLE_RATE),
-            "-c", str(config.CHANNELS),
-            output_path,
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    
-    # Wait for minimum duration before checking silence
-    time.sleep(config.MIN_RECORD_DURATION)
-    
-    # Monitor for silence by periodically reading the WAV file
-    silence_start = None
-    start_time = time.time()
-    
-    while proc.poll() is None:
-        elapsed = time.time() - start_time
-        
-        # Hard limit
-        if elapsed >= config.MAX_RECORD_DURATION:
-            logger.info(f"Max duration reached ({config.MAX_RECORD_DURATION}s)")
+    # Find USB mic
+    device_index = None
+    for i in range(pa.get_device_count()):
+        info = pa.get_device_info_by_index(i)
+        if "usb" in info.get("name", "").lower() and info["maxInputChannels"] > 0:
+            device_index = i
             break
-        
-        # Check tail of recording for silence
-        try:
-            rms = get_tail_rms(output_path)
-            if rms < config.SILENCE_THRESHOLD:
-                if silence_start is None:
-                    silence_start = time.time()
-                elif time.time() - silence_start >= config.SILENCE_DURATION:
-                    logger.info("Silence detected, stopping recording")
-                    break
-            else:
-                silence_start = None
-        except Exception:
-            pass  # File might not be ready yet
-        
-        time.sleep(0.2)
     
-    proc.terminate()
-    try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+    stream = pa.open(
+        format=pyaudio.paInt16,
+        channels=1,
+        rate=MIC_RATE,
+        input=True,
+        input_device_index=device_index,
+        frames_per_buffer=MIC_CHUNK,
+    )
     
-    if not has_speech(output_path):
+    frames = []
+    silent_chunks = 0
+    has_speech = False
+    chunks_needed_for_silence = int(config.SILENCE_DURATION / CHUNK_DURATION)
+    max_chunks = int(config.MAX_RECORD_DURATION / CHUNK_DURATION)
+    min_chunks = int(config.MIN_RECORD_DURATION / CHUNK_DURATION)
+    
+    for i in range(max_chunks):
+        data = stream.read(MIC_CHUNK, exception_on_overflow=False)
+        frames.append(data)
+        
+        # Calculate RMS
+        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+        rms = np.sqrt(np.mean(samples ** 2))
+        
+        if rms > config.SILENCE_THRESHOLD:
+            has_speech = True
+            silent_chunks = 0
+        else:
+            silent_chunks += 1
+        
+        # Stop if silence after speech (and past minimum duration)
+        if has_speech and i >= min_chunks and silent_chunks >= chunks_needed_for_silence:
+            logger.info(f"Silence detected after {i * CHUNK_DURATION:.1f}s")
+            break
+    
+    stream.stop_stream()
+    stream.close()
+    pa.terminate()
+    
+    if not has_speech:
         logger.info("No speech detected")
         return ""
     
+    # Combine frames, downsample 44100→16000, save as WAV
+    audio_44k = np.frombuffer(b"".join(frames), dtype=np.int16)
+    audio_16k = _downsample(audio_44k, MIC_RATE, 16000)
+    
+    _save_wav(output_path, audio_16k, 16000)
+    logger.info(f"Recorded {len(audio_16k) / 16000:.1f}s of audio")
+    
     return output_path
 
 
-def get_tail_rms(wav_path: str, tail_seconds: float = 0.5) -> float:
-    """Get RMS of the last N seconds of a WAV file."""
-    try:
-        with wave.open(wav_path, "rb") as wf:
-            n_frames = wf.getnframes()
-            tail_frames = int(wf.getframerate() * tail_seconds)
-            
-            if n_frames < tail_frames:
-                return 9999  # Not enough data yet, assume speech
-            
-            wf.setpos(n_frames - tail_frames)
-            data = wf.readframes(tail_frames)
-            
-            samples = struct.unpack(f"<{tail_frames}h", data)
-            rms = math.sqrt(sum(s * s for s in samples) / len(samples))
-            return rms
-    except Exception:
-        return 9999  # Assume speech on error
+def _downsample(audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
+    """Simple downsample by taking every Nth sample."""
+    from scipy.signal import resample
+    target_length = int(len(audio) * to_rate / from_rate)
+    return resample(audio, target_length).astype(np.int16)
+
+
+def _save_wav(path: str, audio: np.ndarray, sample_rate: int):
+    """Save numpy int16 array as WAV."""
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(audio.tobytes())
 
 
 def has_speech(wav_path: str, threshold: float = 200) -> bool:
-    """Check if a WAV file contains speech (not just silence/noise)."""
+    """Check if a WAV file contains speech."""
     try:
         with wave.open(wav_path, "rb") as wf:
             data = wf.readframes(wf.getnframes())

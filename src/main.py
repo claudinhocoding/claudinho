@@ -60,11 +60,11 @@ def setup():
 def conversation_turn(assistant: Assistant):
     """Handle one conversation turn: record → transcribe → think → speak."""
     
-    # Record user speech (fixed 5 seconds)
+    # Record user speech (stops on silence)
     wav_path = str(config.TMP_DIR / "input.wav")
-    result = audio.record_fixed(5, wav_path)
+    result = audio.record_until_silence(wav_path)
     
-    if not audio.has_speech(wav_path):
+    if not result:
         logger.info("No speech detected, going back to listening")
         return
     
