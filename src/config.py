@@ -32,7 +32,7 @@ WAKE_WORD_THRESHOLD = 0.5
 
 # ── LLM ───────────────────────────────────────────────────────
 # Reads from ANTHROPIC_API_KEY env var by default
-ANTHROPIC_MODEL = "claude-haiku-4-5-20250929"
+ANTHROPIC_MODEL = "claude-3-5-haiku-20241022"
 SYSTEM_PROMPT = """You are Claudinho, a friendly voice assistant running on a Raspberry Pi 5.
 Keep responses concise and conversational — you're being spoken aloud.
 2-3 sentences max unless asked for more detail.
