@@ -7,40 +7,27 @@ This gives us memory, tools, and conversation persistence.
 """
 
 import logging
-import json
-from pathlib import Path
 
 import requests
 
-logger = logging.getLogger(__name__)
+from config import OPENCLAW_URL, OPENCLAW_TOKEN
 
-GATEWAY_URL = "http://127.0.0.1:18789"
+logger = logging.getLogger(__name__)
 
 
 class Assistant:
     """Chat with Claude through the local OpenClaw gateway."""
     
     def __init__(self):
-        self.token = self._read_token()
         self.session_user = "claudinho-voice"  # stable session key
         
-        if not self.token:
+        if not OPENCLAW_TOKEN:
             raise ValueError(
-                "No OpenClaw gateway token found.\n"
-                "Check ~/.openclaw/openclaw.json for gateway.auth.token"
+                "No OpenClaw gateway token configured.\n"
+                "Set OPENCLAW_TOKEN in config.py"
             )
         
         logger.info("Connected to OpenClaw gateway")
-    
-    def _read_token(self) -> str:
-        """Read gateway token from OpenClaw config."""
-        config_path = Path.home() / ".openclaw" / "openclaw.json"
-        if config_path.exists():
-            data = json.loads(config_path.read_text())
-            token = data.get("gateway", {}).get("auth", {}).get("token", "")
-            if token and token != "__OPENCLAW_REDACTED__":
-                return token
-        return ""
     
     def chat(self, text: str) -> str:
         """
@@ -51,11 +38,10 @@ class Assistant:
         """
         try:
             response = requests.post(
-                f"{GATEWAY_URL}/v1/chat/completions",
+                f"{OPENCLAW_URL}/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {self.token}",
+                    "Authorization": f"Bearer {OPENCLAW_TOKEN}",
                     "Content-Type": "application/json",
-                    "x-openclaw-agent-id": "main",
                 },
                 json={
                     "model": "openclaw",

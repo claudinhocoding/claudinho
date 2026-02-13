@@ -30,9 +30,9 @@ DEFAULT_LANGUAGE = "en"
 WAKE_WORD_MODEL = "hey_jarvis_v0.1"  # built-in; swap to custom .onnx later
 WAKE_WORD_THRESHOLD = 0.5
 
-# ── LLM ───────────────────────────────────────────────────────
-# Handled by OpenClaw gateway — model and system prompt configured there
-# No API key needed here; OpenClaw manages authentication
+# ── OpenClaw Gateway ──────────────────────────────────────────
+OPENCLAW_URL = "http://127.0.0.1:18789"
+OPENCLAW_TOKEN = "4e09f12594b3f0ba3ae73680d1c40bfe2d6d9abf8eafe790"
 
 # ── Recording ─────────────────────────────────────────────────
 SILENCE_THRESHOLD = 500      # RMS threshold for silence detection
