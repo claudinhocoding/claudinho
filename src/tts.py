@@ -78,6 +78,7 @@ def _inworld_tts(text: str, output_path: str) -> str:
         data = response.json()
         # Try common field names
         audio_b64 = (
+            data.get("audioContent") or
             data.get("audio") or 
             data.get("audioData") or 
             data.get("data") or 
