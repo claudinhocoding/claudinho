@@ -3,15 +3,21 @@ Audio Utilities
 ===============
 
 Record and play audio via PyAudio (with silence detection) and aplay.
+
+Silence detection uses a sliding-window RMS approach with:
+- Percentile-based noise calibration (robust to transient spikes)
+- Smoothed RMS over multiple chunks (avoids false triggers)
+- Trailing silence trimming (cleaner audio for Whisper)
 """
 
+import collections
 import ctypes
 import logging
+import math
 import os
+import struct
 import subprocess
 import wave
-import struct
-import math
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +45,9 @@ logger = logging.getLogger(__name__)
 MIC_RATE = 44100
 CHUNK_DURATION = 0.1  # 100ms chunks
 MIC_CHUNK = int(MIC_RATE * CHUNK_DURATION)
+
+# Sliding window size for RMS smoothing (number of chunks)
+RMS_WINDOW = 5  # 500ms window
 
 
 def _find_usb_device(direction: str = "input") -> str:
@@ -88,10 +97,14 @@ def _open_mic():
     return pa, stream
 
 
-def calibrate_noise(stream, duration: float = 0.8) -> float:
+def calibrate_noise(stream, duration: float = 1.5) -> float:
     """
-    Measure ambient noise level for a short period.
-    Returns a threshold = noise_floor * multiplier.
+    Measure ambient noise level over a short period.
+    
+    Uses 90th percentile of RMS values (robust to transient clicks/bumps)
+    and applies a multiplier to set the speech threshold.
+    
+    Returns a threshold that speech must exceed.
     """
     chunks = int(duration / CHUNK_DURATION)
     rms_values = []
@@ -102,10 +115,15 @@ def calibrate_noise(stream, duration: float = 0.8) -> float:
         rms = np.sqrt(np.mean(samples ** 2))
         rms_values.append(rms)
     
-    noise_floor = np.mean(rms_values)
-    multiplier = getattr(config, 'NOISE_MULTIPLIER', 3.5)
-    threshold = max(noise_floor * multiplier, 400)  # minimum 400 to avoid hypersensitivity
-    logger.info(f"🔇 Noise floor: {noise_floor:.0f} RMS → speech threshold: {threshold:.0f}")
+    # Use 90th percentile — more robust than mean (ignores transient spikes)
+    noise_floor = np.percentile(rms_values, 90)
+    multiplier = getattr(config, 'NOISE_MULTIPLIER', 2.5)
+    threshold = max(noise_floor * multiplier, 300)  # minimum 300
+    
+    logger.info(
+        f"🔇 Noise calibration: floor={noise_floor:.0f} (p90 of {len(rms_values)} samples), "
+        f"multiplier={multiplier}x → threshold={threshold:.0f} RMS"
+    )
     return threshold
 
 
@@ -113,10 +131,14 @@ def record_until_silence(output_path: str) -> str:
     """
     Record from mic until user stops speaking.
     
-    1. Calibrates ambient noise level
-    2. Records at 44100 Hz (mic native)
-    3. Stops when silence detected after speech
-    4. Saves as 16kHz WAV for Whisper
+    Improvements over basic RMS threshold:
+    1. Sliding-window RMS smoothing (avoids false triggers from noise spikes)
+    2. Percentile-based noise calibration (robust to transient sounds)
+    3. Minimum speech requirement before silence detection activates
+    4. Trailing silence trimming (cleaner audio for Whisper)
+    5. Generous max duration (30s) so it doesn't cut off mid-sentence
+    
+    Saves as 16kHz WAV for Whisper.
     """
     logger.info("🎤 Listening...")
     
@@ -126,31 +148,66 @@ def record_until_silence(output_path: str) -> str:
     threshold = calibrate_noise(stream)
     
     frames = []
+    rms_history = collections.deque(maxlen=RMS_WINDOW)  # sliding window
     silent_chunks = 0
+    speech_chunks = 0
     has_speech = False
-    chunks_needed_for_silence = int(config.SILENCE_DURATION / CHUNK_DURATION)
+    last_speech_idx = 0  # index of last chunk with detected speech
+    
+    chunks_for_silence = int(config.SILENCE_DURATION / CHUNK_DURATION)
     max_chunks = int(config.MAX_RECORD_DURATION / CHUNK_DURATION)
-    min_chunks = int(config.MIN_RECORD_DURATION / CHUNK_DURATION)
+    min_speech_chunks = int(getattr(config, 'MIN_SPEECH_DURATION', 0.3) / CHUNK_DURATION)
+    min_record_chunks = int(config.MIN_RECORD_DURATION / CHUNK_DURATION)
     
     for i in range(max_chunks):
         data = stream.read(MIC_CHUNK, exception_on_overflow=False)
         frames.append(data)
         
-        # Calculate RMS
+        # Calculate RMS for this chunk
         samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
         rms = np.sqrt(np.mean(samples ** 2))
+        rms_history.append(rms)
         
-        if rms > threshold:
+        # Use smoothed RMS (average of sliding window) — much more stable
+        smoothed_rms = np.mean(list(rms_history))
+        
+        is_speech = smoothed_rms > threshold
+        
+        if is_speech:
+            speech_chunks += 1
             has_speech = True
             silent_chunks = 0
+            last_speech_idx = i
         else:
-            silent_chunks += 1
+            if has_speech:
+                silent_chunks += 1
         
-        # Stop if silence after speech (and past minimum duration)
-        if has_speech and i >= min_chunks and silent_chunks >= chunks_needed_for_silence:
-            logger.info(f"Silence detected after {i * CHUNK_DURATION:.1f}s")
+        # Debug logging every second
+        if logger.isEnabledFor(logging.DEBUG) and i % 10 == 0:
+            logger.debug(
+                f"  chunk {i}: rms={rms:.0f} smoothed={smoothed_rms:.0f} "
+                f"thresh={threshold:.0f} speech={is_speech} "
+                f"silent={silent_chunks}/{chunks_for_silence}"
+            )
+        
+        # Stop conditions:
+        # 1. Have detected enough actual speech
+        # 2. Past minimum recording duration
+        # 3. Enough consecutive silence detected
+        if (has_speech
+                and speech_chunks >= min_speech_chunks
+                and i >= min_record_chunks
+                and silent_chunks >= chunks_for_silence):
+            logger.info(
+                f"✂️  Silence detected after {i * CHUNK_DURATION:.1f}s "
+                f"({speech_chunks * CHUNK_DURATION:.1f}s speech, "
+                f"{silent_chunks * CHUNK_DURATION:.1f}s silence)"
+            )
             break
-    
+    else:
+        if has_speech:
+            logger.info(f"⏱️  Max duration reached ({config.MAX_RECORD_DURATION}s)")
+        
     stream.stop_stream()
     stream.close()
     pa.terminate()
@@ -159,18 +216,27 @@ def record_until_silence(output_path: str) -> str:
         logger.info("No speech detected")
         return ""
     
+    # Trim trailing silence (keep ~200ms for natural cutoff)
+    keep_silent_chunks = int(0.2 / CHUNK_DURATION)
+    trim_point = last_speech_idx + 1 + keep_silent_chunks
+    if trim_point < len(frames):
+        trimmed = len(frames) - trim_point
+        frames = frames[:trim_point]
+        logger.debug(f"Trimmed {trimmed} silent chunks ({trimmed * CHUNK_DURATION:.1f}s)")
+    
     # Combine frames, downsample 44100→16000, save as WAV
     audio_44k = np.frombuffer(b"".join(frames), dtype=np.int16)
     audio_16k = _downsample(audio_44k, MIC_RATE, 16000)
     
     _save_wav(output_path, audio_16k, 16000)
-    logger.info(f"Recorded {len(audio_16k) / 16000:.1f}s of audio")
+    duration = len(audio_16k) / 16000
+    logger.info(f"📼 Recorded {duration:.1f}s of audio (trimmed)")
     
     return output_path
 
 
 def _downsample(audio: np.ndarray, from_rate: int, to_rate: int) -> np.ndarray:
-    """Simple downsample by taking every Nth sample."""
+    """Downsample audio using scipy's resample (high quality)."""
     from scipy.signal import resample
     target_length = int(len(audio) * to_rate / from_rate)
     return resample(audio, target_length).astype(np.int16)
@@ -186,7 +252,7 @@ def _save_wav(path: str, audio: np.ndarray, sample_rate: int):
 
 
 def has_speech(wav_path: str, threshold: float = 200) -> bool:
-    """Check if a WAV file contains speech."""
+    """Check if a WAV file contains speech (basic energy check)."""
     try:
         with wave.open(wav_path, "rb") as wf:
             data = wf.readframes(wf.getnframes())
@@ -220,7 +286,6 @@ def play(wav_path: str):
 
 def play_beep():
     """Play a short beep to indicate listening."""
-    # Generate a simple beep tone
     beep_path = str(config.TMP_DIR / "beep.wav")
     
     if not Path(beep_path).exists():
@@ -241,7 +306,6 @@ def _generate_beep(path: str, freq: int = 880, duration: float = 0.15):
         
         for i in range(n_samples):
             t = i / sample_rate
-            # Simple sine wave with fade out
             fade = 1.0 - (i / n_samples)
             sample = int(16000 * fade * math.sin(2 * math.pi * freq * t))
             wf.writeframes(struct.pack("<h", sample))

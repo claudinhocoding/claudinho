@@ -45,10 +45,11 @@ INWORLD_MODEL = "inworld-tts-1.5-max"
 
 # ── Recording ─────────────────────────────────────────────────
 SILENCE_THRESHOLD = 500      # RMS threshold (fallback, auto-calibration overrides)
-SILENCE_DURATION = 1.0       # seconds of silence to stop recording (was 1.5)
-MAX_RECORD_DURATION = 5      # max seconds per recording
-MIN_RECORD_DURATION = 0.5    # minimum seconds before silence detection kicks in (was 1.0)
-NOISE_MULTIPLIER = 3.5       # speech must be this many times louder than noise (was 2.5)
+SILENCE_DURATION = 1.5       # seconds of silence to stop recording
+MAX_RECORD_DURATION = 30     # max seconds per recording (was 5 — way too short!)
+MIN_RECORD_DURATION = 0.8    # minimum seconds before silence detection kicks in
+MIN_SPEECH_DURATION = 0.3    # minimum speech detected before allowing silence stop
+NOISE_MULTIPLIER = 2.5       # speech must be this many times louder than noise (was 3.5)
 
 # ── Paths ─────────────────────────────────────────────────────
 TMP_DIR = Path("/tmp/claudinho")
