@@ -1,1 +1,4 @@
 models/claudinho*
+.env
+__pycache__/
+*.pyc

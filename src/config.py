@@ -6,6 +6,7 @@ All hardware-specific paths and settings in one place.
 Edit this file to match your Pi setup.
 """
 
+import os
 from pathlib import Path
 
 # ── Audio Devices (ALSA) ──────────────────────────────────────
@@ -43,15 +44,18 @@ INWORLD_API_KEY = "endGMkV6SzRoeGgyUVVYZlB1UWZEYnBBSnhYZlRFVzk6S1hQUjFQSm00b1hzT
 INWORLD_VOICE_ID = "Theodore"
 INWORLD_MODEL = "inworld-tts-1.5-max"
 
-# ── Voice Activity Detection (Silero VAD) ─────────────────────
-# Neural VAD — much more accurate than RMS with noisy USB mics
-SILERO_VAD_MODEL = None      # auto: ~/claudinho/models/silero_vad.onnx (downloads on first use)
+# ── Groq API (Cloud STT) ──────────────────────────────────────
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_STT_MODEL = "whisper-large-v3-turbo"
+GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+# ── Voice Activity Detection ──────────────────────────────────
 VAD_THRESHOLD = 0.4          # speech probability threshold (0.0-1.0, lower = more sensitive)
 
 # ── Recording ─────────────────────────────────────────────────
-SILENCE_DURATION = 1.5       # seconds of silence to stop recording
+SILENCE_DURATION = 0.8       # seconds of silence to stop recording (webrtcvad is accurate)
 MAX_RECORD_DURATION = 30     # max seconds per recording
-MIN_RECORD_DURATION = 0.8    # minimum seconds before silence detection kicks in
+MIN_RECORD_DURATION = 0.5    # minimum seconds before silence detection kicks in
 MIN_SPEECH_DURATION = 0.3    # minimum speech detected before allowing silence stop
 NOISE_MULTIPLIER = 2.5       # RMS fallback: speech must be this many times louder than noise
 
