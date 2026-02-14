@@ -17,15 +17,21 @@ import config
 logger = logging.getLogger(__name__)
 
 
+_tts_counter = 0
+
+
 def synthesize(text: str, language: str = "en") -> str:
     """Synthesize text to speech. Returns path to WAV file."""
+    global _tts_counter
     if not text.strip():
         return ""
     
     if len(text) > 500:
         text = text[:497] + "..."
     
-    output_path = str(config.TMP_DIR / "response.wav")
+    # Unique filename per call (avoid overwriting while previous is playing)
+    output_path = str(config.TMP_DIR / f"response_{_tts_counter}.wav")
+    _tts_counter = (_tts_counter + 1) % 10
     
     try:
         result = _inworld_tts(text, output_path)

@@ -3,15 +3,17 @@
 Claudinho - DIY Voice Assistant
 ================================
 
-Wake word → Record → Whisper STT → Claude → Piper TTS → Speaker
+Wake word → Record → Groq STT → Claude (streaming) → Inworld TTS → Speaker
 
-Hardware: Raspberry Pi 5, USB mic, USB speaker
+Pipeline streams Claude's response sentence-by-sentence:
+first sentence plays while the rest is still generating.
 """
 
 import argparse
 import logging
 import signal
 import sys
+import time
 
 import config
 import audio
@@ -31,96 +33,102 @@ logger = logging.getLogger(__name__)
 def setup():
     """Create temp dirs and verify components exist."""
     config.TMP_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Check whisper
+
+    # Whisper.cpp is optional (Groq cloud STT is primary)
     if not config.WHISPER_CLI.exists():
-        logger.error(f"Whisper CLI not found: {config.WHISPER_CLI}")
-        logger.error("Build it: cd ~/whisper.cpp && make -j4")
-        sys.exit(1)
-    
+        logger.warning(f"Whisper CLI not found (Groq cloud STT will be used)")
     if not config.WHISPER_MODEL.exists():
-        logger.error(f"Whisper model not found: {config.WHISPER_MODEL}")
-        logger.error("Download: cd ~/whisper.cpp && ./models/download-ggml-model.sh base")
-        sys.exit(1)
-    
-    # Check piper
+        logger.warning(f"Whisper model not found (Groq cloud STT will be used)")
+
+    # Piper is optional (Inworld cloud TTS is primary)
     if not config.PIPER_BIN.exists():
-        logger.error(f"Piper not found: {config.PIPER_BIN}")
-        sys.exit(1)
-    
-    # Check at least one voice
-    has_voice = any(p.exists() for p in config.PIPER_VOICES.values())
-    if not has_voice:
-        logger.error("No Piper voice models found!")
-        sys.exit(1)
-    
-    logger.info("✅ All components verified")
+        logger.warning(f"Piper not found (Inworld cloud TTS will be used)")
+
+    logger.info("✅ Components verified")
 
 
 def conversation_turn(assistant: Assistant):
-    """Handle one conversation turn: record → transcribe → think → speak."""
-    
-    # Record user speech (stops on silence)
+    """
+    Handle one conversation turn with streaming.
+
+    Pipeline:
+    1. Record until silence (webrtcvad)
+    2. Transcribe (Groq cloud, <1s)
+    3. Stream Claude's response sentence by sentence
+    4. TTS + play each sentence as it arrives
+    """
+    # Record user speech
     wav_path = str(config.TMP_DIR / "input.wav")
     result = audio.record_until_silence(wav_path)
-    
+
     if not result:
         logger.info("No speech detected, going back to listening")
         return
-    
-    # Transcribe with language detection
+
+    # Transcribe
     text, language = stt.transcribe(wav_path)
-    
+
     if not text.strip():
         logger.info("Empty transcription, going back to listening")
         return
-    
+
     logger.info(f"📝 [{language}] User: {text}")
-    
-    # Get response from Claude
+
+    # Stream response sentence-by-sentence
     logger.info("🤔 Thinking...")
-    response = assistant.chat(text)
-    logger.info(f"💬 Claudinho: {response}")
-    
-    # Synthesize and play response
-    response_wav = tts.synthesize(response, language=language)
-    if response_wav:
-        audio.play(response_wav)
+    t_start = time.monotonic()
+    first_audio = True
+    full_response = []
+
+    for sentence in assistant.chat_stream_sentences(text):
+        full_response.append(sentence)
+
+        if first_audio:
+            elapsed = time.monotonic() - t_start
+            logger.info(f"⚡ First sentence in {elapsed:.1f}s: {sentence}")
+            first_audio = False
+        else:
+            logger.info(f"   ➜ {sentence}")
+
+        # Synthesize and play this sentence
+        wav = tts.synthesize(sentence, language=language)
+        if wav:
+            audio.play(wav)
+
+    logger.info(f"💬 Full response: {' '.join(full_response)}")
 
 
 def run_assistant():
     """Main loop: wake word → conversation → repeat."""
     setup()
-    
+
     logger.info("🐱 Claudinho starting up...")
-    
-    # Initialize components
+
     assistant = Assistant()
     detector = WakeWordDetector()
-    
-    # Play startup sound
+
     audio.play_beep()
-    
-    logger.info(f"👂 Listening for wake word (say '{config.WAKE_WORD_MODEL}')...")
+
+    logger.info(f"👂 Listening for wake word...")
     logger.info("Press Ctrl+C to stop\n")
-    
+
     running = True
-    
+
     def stop(sig, frame):
         nonlocal running
         running = False
-    
+
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
-    
+
     try:
         while running:
             if detector.listen():
                 logger.info("👋 Wake word detected!")
-                detector.pause()  # release mic for arecord
+                detector.pause()
                 audio.play_beep()
                 conversation_turn(assistant)
-                detector.resume()  # reopen mic for wake word
+                detector.resume()
                 logger.info(f"👂 Listening for wake word...\n")
     finally:
         detector.cleanup()
@@ -130,12 +138,12 @@ def run_assistant():
 def run_no_wake():
     """Run without wake word — just press Enter to talk."""
     setup()
-    
+
     logger.info("🐱 Claudinho (no wake word mode)")
     logger.info("Press Enter to start recording, Ctrl+C to quit\n")
-    
+
     assistant = Assistant()
-    
+
     try:
         while True:
             input("⏎  Press Enter to speak...")
@@ -157,10 +165,10 @@ def main():
         help="Enable debug logging"
     )
     args = parser.parse_args()
-    
+
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+
     if args.no_wake:
         run_no_wake()
     else:
