@@ -2,15 +2,12 @@
 Text-to-Speech via Inworld AI
 ==============================
 
-Cloud TTS using Inworld's API. Much better quality than local Piper.
-Falls back to Piper if the API call fails.
+Cloud TTS using Inworld's API. Falls back to Piper if API fails.
 """
 
 import base64
-import json
 import logging
 import subprocess
-import wave
 from pathlib import Path
 
 import requests
@@ -21,14 +18,10 @@ logger = logging.getLogger(__name__)
 
 
 def synthesize(text: str, language: str = "en") -> str:
-    """
-    Synthesize text to speech using Inworld TTS.
-    Returns path to WAV file, or empty string on failure.
-    """
+    """Synthesize text to speech. Returns path to WAV file."""
     if not text.strip():
         return ""
     
-    # Truncate very long responses for TTS
     if len(text) > 500:
         text = text[:497] + "..."
     
@@ -41,13 +34,12 @@ def synthesize(text: str, language: str = "en") -> str:
     except Exception as e:
         logger.warning(f"Inworld TTS failed: {e}")
     
-    # Fallback to Piper
     logger.info("Falling back to Piper TTS")
     return _piper_tts(text, language, output_path)
 
 
 def _inworld_tts(text: str, output_path: str) -> str:
-    """Call Inworld TTS API."""
+    """Call Inworld TTS API. Returns WAV directly (LINEAR16)."""
     logger.info(f"TTS (Inworld): {text[:80]}...")
     
     response = requests.post(
@@ -60,6 +52,10 @@ def _inworld_tts(text: str, output_path: str) -> str:
             "text": text,
             "voiceId": config.INWORLD_VOICE_ID,
             "modelId": config.INWORLD_MODEL,
+            "audioConfig": {
+                "audioEncoding": "LINEAR16",
+                "sampleRateHertz": 16000,
+            },
         },
         timeout=15,
     )
@@ -68,58 +64,19 @@ def _inworld_tts(text: str, output_path: str) -> str:
         logger.error(f"Inworld API error: {response.status_code} {response.text[:200]}")
         return ""
     
-    content_type = response.headers.get("Content-Type", "")
+    data = response.json()
+    audio_b64 = data.get("audioContent", "")
     
-    if "audio" in content_type:
-        # Direct audio bytes
-        audio_data = response.content
-    elif "json" in content_type:
-        # JSON response with base64 audio
-        data = response.json()
-        # Try common field names
-        audio_b64 = (
-            data.get("audioContent") or
-            data.get("audio") or 
-            data.get("audioData") or 
-            data.get("data") or 
-            data.get("output", {}).get("audio") or
-            ""
-        )
-        if not audio_b64:
-            logger.error(f"No audio in response: {list(data.keys())}")
-            return ""
-        audio_data = base64.b64decode(audio_b64)
-    else:
-        # Assume raw audio
-        audio_data = response.content
-    
-    if not audio_data:
+    if not audio_b64:
+        logger.error(f"No audioContent in response: {list(data.keys())}")
         return ""
     
-    # Save audio — detect format and convert to WAV if needed
-    # Check if it's already WAV
-    if audio_data[:4] == b"RIFF":
-        with open(output_path, "wb") as f:
-            f.write(audio_data)
-    else:
-        # Likely MP3 or other format — save as temp then convert with ffmpeg
-        tmp_path = str(config.TMP_DIR / "response_raw.mp3")
-        with open(tmp_path, "wb") as f:
-            f.write(audio_data)
-        
-        # Convert to WAV
-        try:
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", tmp_path, "-ar", "16000", "-ac", "1", output_path],
-                capture_output=True, check=True, timeout=10,
-            )
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            # Try aplay-compatible format with sox or just save raw
-            # If no ffmpeg, try playing mp3 directly
-            output_path = tmp_path  # aplay might not handle mp3
-            logger.warning("ffmpeg not found, trying raw audio")
+    audio_bytes = base64.b64decode(audio_b64)
     
-    logger.info(f"TTS audio saved: {output_path}")
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+    
+    logger.info(f"TTS audio: {len(audio_bytes)} bytes")
     return output_path
 
 
@@ -134,11 +91,7 @@ def _piper_tts(text: str, language: str, output_path: str) -> str:
     
     try:
         proc = subprocess.run(
-            [
-                str(config.PIPER_BIN),
-                "--model", str(voice),
-                "--output_file", output_path,
-            ],
+            [str(config.PIPER_BIN), "--model", str(voice), "--output_file", output_path],
             input=text.encode(),
             capture_output=True,
             timeout=30,
