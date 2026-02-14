@@ -86,13 +86,13 @@ def _open_mic():
 
 
 def _load_vad():
-    """Try to load Silero VAD. Returns None if unavailable."""
+    """Load the best available VAD backend."""
     try:
-        from vad import SileroVAD
-        model_path = getattr(config, 'SILERO_VAD_MODEL', None)
-        return SileroVAD(model_path)
+        from vad import create_vad
+        threshold = getattr(config, 'VAD_THRESHOLD', 0.4)
+        return create_vad(threshold=threshold)
     except Exception as e:
-        logger.warning(f"Silero VAD not available ({e}), falling back to RMS")
+        logger.warning(f"VAD not available ({e}), falling back to RMS")
         return None
 
 
@@ -133,8 +133,7 @@ def record_until_silence(output_path: str) -> str:
 
 
 def _record_with_vad(stream, vad, output_path: str) -> str:
-    """Record using Silero VAD for speech/silence detection."""
-    vad_threshold = getattr(config, 'VAD_THRESHOLD', 0.4)
+    """Record using VAD backend for speech/silence detection."""
     silence_duration = config.SILENCE_DURATION
     max_duration = config.MAX_RECORD_DURATION
     min_speech = getattr(config, 'MIN_SPEECH_DURATION', 0.3)
@@ -148,7 +147,7 @@ def _record_with_vad(stream, vad, output_path: str) -> str:
     max_chunks = int(max_duration / CHUNK_DURATION)
     min_speech_time = min_speech
 
-    logger.info(f"🧠 Using Silero VAD (threshold={vad_threshold})")
+    logger.info(f"🧠 Using VAD: {type(vad).__name__}")
 
     for i in range(max_chunks):
         data = stream.read(MIC_CHUNK, exception_on_overflow=False)
@@ -157,9 +156,8 @@ def _record_with_vad(stream, vad, output_path: str) -> str:
         # Downsample chunk for VAD (44100→16000)
         samples_44k = np.frombuffer(data, dtype=np.int16)
         samples_16k = _fast_downsample(samples_44k.astype(np.float64))
-        speech_prob = vad.process_chunk(samples_16k)
 
-        is_speech = speech_prob > vad_threshold
+        is_speech = vad.is_speech(samples_16k)
 
         if is_speech:
             speech_time += CHUNK_DURATION
@@ -173,7 +171,7 @@ def _record_with_vad(stream, vad, output_path: str) -> str:
         # Debug logging every second
         if logger.isEnabledFor(logging.DEBUG) and i % 10 == 0:
             logger.debug(
-                f"  [{i * CHUNK_DURATION:.1f}s] prob={speech_prob:.2f} "
+                f"  [{i * CHUNK_DURATION:.1f}s] "
                 f"speech={is_speech} silent={silent_time:.1f}s"
             )
 

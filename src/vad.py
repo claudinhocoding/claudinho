@@ -1,125 +1,137 @@
 """
-Voice Activity Detection (Silero VAD)
-=====================================
+Voice Activity Detection
+========================
 
-Neural speech detection using Silero VAD ONNX model.
-Much more accurate than RMS-based threshold, especially with noisy USB mics.
+Tries multiple VAD backends in order:
+1. silero-vad package (official, most accurate)
+2. webrtcvad (Google's C-based VAD, fast and reliable)
+3. RMS threshold (last resort)
 
-Requires: onnxruntime (already installed for openWakeWord)
-Model:    silero_vad.onnx (~2MB, auto-downloaded on first use)
+Install one: pip install silero-vad  OR  pip install webrtcvad
 """
 
 import logging
-from pathlib import Path
-from typing import Optional
+from typing import Optional, Protocol
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-MODEL_URL = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
-WINDOW_SIZE = 512  # samples at 16kHz (32ms per window)
-SAMPLE_RATE = 16000
+
+class VADBackend(Protocol):
+    """Interface for VAD backends."""
+    def is_speech(self, audio_16k_int16: np.ndarray) -> bool: ...
+    def reset(self) -> None: ...
 
 
-def _download_model(dest: Path) -> bool:
-    """Download Silero VAD ONNX model if not present."""
-    import urllib.request
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Downloading Silero VAD model to {dest}...")
-    try:
-        urllib.request.urlretrieve(MODEL_URL, str(dest))
-        logger.info(f"Downloaded ({dest.stat().st_size / 1024:.0f} KB)")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to download VAD model: {e}")
-        return False
+class SileroVADBackend:
+    """Official silero-vad package (ONNX, no PyTorch needed)."""
 
+    def __init__(self, threshold: float = 0.4):
+        from silero_vad import load_silero_vad, VADIterator
+        self.model = load_silero_vad(onnx=True)
+        self.threshold = threshold
+        self.iterator = VADIterator(
+            self.model,
+            threshold=threshold,
+            sampling_rate=16000,
+            min_silence_duration_ms=100,
+        )
+        logger.info(f"Silero VAD loaded (threshold={threshold})")
 
-class SileroVAD:
-    """
-    Silero VAD using ONNX runtime (no PyTorch needed).
+    def is_speech(self, audio_16k_int16: np.ndarray) -> bool:
+        """Check if audio chunk contains speech."""
+        import torch
+        # Normalize to float32 [-1, 1]
+        audio_f32 = audio_16k_int16.astype(np.float32) / 32768.0
+        tensor = torch.from_numpy(audio_f32)
 
-    Usage:
-        vad = SileroVAD("path/to/silero_vad.onnx")
-        prob = vad.process_chunk(audio_16k_int16)
-        if prob > 0.5:
-            print("Speech detected!")
-        vad.reset()  # call between utterances
-    """
+        # Process in 512-sample windows
+        window_size = 512
+        any_speech = False
+        for start in range(0, len(tensor) - window_size + 1, window_size):
+            window = tensor[start:start + window_size]
+            prob = self.model(window, 16000).item()
+            if prob > self.threshold:
+                any_speech = True
+                break
 
-    def __init__(self, model_path: Optional[str] = None):
-        import onnxruntime
-
-        if model_path is None:
-            model_path = str(Path.home() / "claudinho" / "models" / "silero_vad.onnx")
-
-        path = Path(model_path)
-        if not path.exists():
-            if not _download_model(path):
-                raise FileNotFoundError(f"VAD model not found: {model_path}")
-
-        opts = onnxruntime.SessionOptions()
-        opts.inter_op_num_threads = 1
-        opts.intra_op_num_threads = 1
-        self.session = onnxruntime.InferenceSession(str(path), sess_options=opts)
-
-        self._detect_version()
-        self.reset()
-        logger.info(f"Silero VAD v{self.version} loaded from {path.name}")
-
-    def _detect_version(self):
-        """Auto-detect model version from input names."""
-        input_names = [i.name for i in self.session.get_inputs()]
-        if "state" in input_names:
-            self.version = 5
-            self._state_dim = 128
-        else:
-            self.version = 4
-            self._state_dim = 64
+        return any_speech
 
     def reset(self):
-        """Reset internal state (call between utterances)."""
-        if self.version == 5:
-            self._state = np.zeros((2, 1, self._state_dim), dtype=np.float32)
-        else:
-            self._h = np.zeros((2, 1, self._state_dim), dtype=np.float32)
-            self._c = np.zeros((2, 1, self._state_dim), dtype=np.float32)
-        self._buffer = np.array([], dtype=np.float32)
+        self.model.reset_states()
 
-    def process_chunk(self, audio_16k: np.ndarray) -> float:
-        """
-        Process a chunk of 16kHz int16 audio.
-        Returns the max speech probability (0.0 to 1.0) across all windows.
 
-        Handles chunks of any size by buffering leftover samples.
-        """
-        # Normalize to float32 [-1, 1]
-        audio_f32 = audio_16k.astype(np.float32) / 32768.0
+class WebRTCVADBackend:
+    """Google's WebRTC VAD (C-based, fast, reliable)."""
 
-        # Append to buffer (handles leftover from previous chunk)
-        self._buffer = np.concatenate([self._buffer, audio_f32])
+    def __init__(self, aggressiveness: int = 3):
+        import webrtcvad
+        self.vad = webrtcvad.Vad(aggressiveness)
+        self.aggressiveness = aggressiveness
+        logger.info(f"WebRTC VAD loaded (aggressiveness={aggressiveness})")
 
-        max_prob = 0.0
-        # Process complete windows
-        while len(self._buffer) >= WINDOW_SIZE:
-            window = self._buffer[:WINDOW_SIZE]
-            self._buffer = self._buffer[WINDOW_SIZE:]
-            prob = self._infer(window)
-            max_prob = max(max_prob, prob)
+    def is_speech(self, audio_16k_int16: np.ndarray) -> bool:
+        """Check if audio chunk contains speech using majority vote."""
+        pcm = audio_16k_int16.tobytes()
+        frame_duration_ms = 30  # 10, 20, or 30 ms
+        frame_size = int(16000 * frame_duration_ms / 1000) * 2  # bytes (int16)
+        n_speech = 0
+        n_frames = 0
 
-        return max_prob
+        for start in range(0, len(pcm) - frame_size + 1, frame_size):
+            frame = pcm[start:start + frame_size]
+            try:
+                if self.vad.is_speech(frame, 16000):
+                    n_speech += 1
+            except Exception:
+                pass
+            n_frames += 1
 
-    def _infer(self, window: np.ndarray) -> float:
-        """Run one ONNX inference on a 512-sample window."""
-        x = window.reshape(1, -1)
-        sr = np.array(SAMPLE_RATE, dtype=np.int64)
+        if n_frames == 0:
+            return False
+        # Speech if >30% of frames contain speech
+        return (n_speech / n_frames) > 0.3
 
-        if self.version == 5:
-            inputs = {"input": x, "state": self._state, "sr": sr}
-            out, self._state = self.session.run(None, inputs)
-        else:
-            inputs = {"input": x, "h": self._h, "c": self._c, "sr": sr}
-            out, self._h, self._c = self.session.run(None, inputs)
+    def reset(self):
+        pass  # WebRTC VAD is stateless
 
-        return float(np.squeeze(out))
+
+class RMSVADBackend:
+    """Simple RMS-based VAD (last resort fallback)."""
+
+    def __init__(self, threshold: float = 500):
+        self.threshold = threshold
+        self._calibrated = False
+        logger.info(f"RMS VAD fallback (threshold={threshold})")
+
+    def is_speech(self, audio_16k_int16: np.ndarray) -> bool:
+        samples = audio_16k_int16.astype(np.float32)
+        rms = np.sqrt(np.mean(samples ** 2))
+        return rms > self.threshold
+
+    def reset(self):
+        pass
+
+
+def create_vad(threshold: float = 0.4) -> VADBackend:
+    """Create the best available VAD backend."""
+    # Try silero-vad first
+    try:
+        return SileroVADBackend(threshold=threshold)
+    except ImportError:
+        logger.info("silero-vad not installed (pip install silero-vad)")
+    except Exception as e:
+        logger.warning(f"silero-vad failed: {e}")
+
+    # Try webrtcvad
+    try:
+        return WebRTCVADBackend(aggressiveness=3)
+    except ImportError:
+        logger.info("webrtcvad not installed (pip install webrtcvad)")
+    except Exception as e:
+        logger.warning(f"webrtcvad failed: {e}")
+
+    # Fall back to RMS
+    logger.warning("No VAD backend available, using RMS threshold")
+    return RMSVADBackend(threshold=500)
