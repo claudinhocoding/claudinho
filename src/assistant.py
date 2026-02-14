@@ -3,13 +3,13 @@ Assistant
 =========
 
 Talks to Claude via OpenClaw's OpenAI-compatible HTTP API.
-Supports both blocking and streaming responses.
+Supports streaming responses and smart home actions.
 """
 
 import json
 import logging
 import re
-from typing import Generator
+from typing import Generator, List
 
 import requests
 
@@ -17,7 +17,7 @@ from config import OPENCLAW_URL, OPENCLAW_TOKEN
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (
+BASE_SYSTEM_PROMPT = (
     "You are Claudinho, a voice assistant running on a Raspberry Pi 5. "
     "You hear the user through a microphone and speak back through a speaker. "
     "Keep responses short and conversational — this is spoken audio, not text chat. "
@@ -25,12 +25,34 @@ SYSTEM_PROMPT = (
     "Be natural, helpful, and concise. 1-3 sentences is ideal."
 )
 
+SMART_HOME_PROMPT = """
+
+You can control smart home devices. Available devices:
+{devices}
+
+To control a device, include an action tag in your response:
+<<turn_on:Device Name>>
+<<turn_off:Device Name>>
+<<brightness:Device Name:50>>
+<<toggle:Device Name>>
+
+Always include natural speech along with the action. The action tags will be removed before speaking.
+Example: "Sure, turning on the living room light. <<turn_on:Living Room Light>>"
+You can include multiple actions in one response.
+If the user asks to turn on/off "the lights" or "all lights", control all available devices."""
+
 
 class Assistant:
     """Chat with Claude through the local OpenClaw gateway."""
 
-    def __init__(self):
+    def __init__(self, device_list: List[str] = None):
         self.session_user = "claudinho-voice"
+        self.system_prompt = BASE_SYSTEM_PROMPT
+
+        if device_list:
+            devices_str = "\n".join(device_list)
+            self.system_prompt += SMART_HOME_PROMPT.format(devices=devices_str)
+            logger.info(f"🏠 Smart home enabled with {len(device_list)} device(s)")
 
         if not OPENCLAW_TOKEN:
             raise ValueError(
@@ -43,10 +65,7 @@ class Assistant:
     # ── Streaming chat ────────────────────────────────────────
 
     def chat_stream(self, text: str) -> Generator[str, None, None]:
-        """
-        Stream a response from Claude, yielding text chunks as they arrive.
-        Uses Server-Sent Events (SSE) via the OpenAI streaming API.
-        """
+        """Stream a response from Claude, yielding text chunks."""
         try:
             response = requests.post(
                 f"{OPENCLAW_URL}/v1/chat/completions",
@@ -59,7 +78,7 @@ class Assistant:
                     "user": self.session_user,
                     "stream": True,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": text},
                     ],
                 },
@@ -94,18 +113,13 @@ class Assistant:
             yield "Sorry, something went wrong."
 
     def chat_stream_sentences(self, text: str) -> Generator[str, None, None]:
-        """
-        Stream Claude's response and yield complete sentences.
-        Buffers text until a sentence boundary is found.
-        """
+        """Stream response and yield complete sentences."""
         buffer = ""
 
         for chunk in self.chat_stream(text):
             buffer += chunk
 
-            # Try to extract complete sentences
             while True:
-                # Look for sentence-ending punctuation followed by space or end
                 match = re.search(r'([.!?])\s', buffer)
                 if match:
                     end = match.end()
@@ -116,7 +130,6 @@ class Assistant:
                 else:
                     break
 
-        # Yield any remaining text
         if buffer.strip():
             yield buffer.strip()
 
@@ -135,7 +148,7 @@ class Assistant:
                     "model": "openclaw",
                     "user": self.session_user,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": text},
                     ],
                 },

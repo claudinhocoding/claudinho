@@ -4,13 +4,12 @@ Claudinho - DIY Voice Assistant
 ================================
 
 Wake word → Record → Groq STT → Claude (streaming) → Inworld TTS → Speaker
-
-Pipeline streams Claude's response sentence-by-sentence:
-first sentence plays while the rest is still generating.
+With smart home control via TP-Link Kasa devices.
 """
 
 import argparse
 import logging
+import re
 import signal
 import sys
 import time
@@ -29,33 +28,72 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Global smart home instance
+smart_home = None
+
 
 def setup():
-    """Create temp dirs and verify components exist."""
+    """Create temp dirs, verify components, discover smart home devices."""
+    global smart_home
     config.TMP_DIR.mkdir(parents=True, exist_ok=True)
 
     # Whisper.cpp is optional (Groq cloud STT is primary)
     if not config.WHISPER_CLI.exists():
-        logger.warning(f"Whisper CLI not found (Groq cloud STT will be used)")
+        logger.warning("Whisper CLI not found (Groq cloud STT will be used)")
     if not config.WHISPER_MODEL.exists():
-        logger.warning(f"Whisper model not found (Groq cloud STT will be used)")
+        logger.warning("Whisper model not found (Groq cloud STT will be used)")
 
     # Piper is optional (Inworld cloud TTS is primary)
     if not config.PIPER_BIN.exists():
-        logger.warning(f"Piper not found (Inworld cloud TTS will be used)")
+        logger.warning("Piper not found (Inworld cloud TTS will be used)")
+
+    # Discover smart home devices
+    try:
+        from lights import SmartHome
+        smart_home = SmartHome()
+        smart_home.discover()
+    except ImportError:
+        logger.info("python-kasa not installed — smart home disabled")
+    except Exception as e:
+        logger.warning(f"Smart home discovery failed: {e}")
 
     logger.info("✅ Components verified")
 
 
+def extract_actions(text: str):
+    """
+    Extract <<action:device:param>> tags from text.
+    Returns (clean_text, list_of_actions).
+    """
+    actions = re.findall(r'<<(.+?)>>', text)
+    clean_text = re.sub(r'<<.+?>>', '', text).strip()
+    # Clean up extra spaces
+    clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+    return clean_text, actions
+
+
+def execute_actions(actions: list):
+    """Execute smart home actions."""
+    if not smart_home or not actions:
+        return
+    for action in actions:
+        try:
+            result = smart_home.execute_action(action)
+            logger.info(f"🏠 Action: {action} → {result}")
+        except Exception as e:
+            logger.error(f"🏠 Action failed: {action} → {e}")
+
+
 def conversation_turn(assistant: Assistant):
     """
-    Handle one conversation turn with streaming.
+    Handle one conversation turn with streaming + smart home actions.
 
     Pipeline:
     1. Record until silence (webrtcvad)
     2. Transcribe (Groq cloud, <1s)
     3. Stream Claude's response sentence by sentence
-    4. TTS + play each sentence as it arrives
+    4. Extract & execute smart home actions
+    5. TTS + play each sentence (without action tags)
     """
     # Record user speech
     wav_path = str(config.TMP_DIR / "input.wav")
@@ -83,15 +121,25 @@ def conversation_turn(assistant: Assistant):
     for sentence in assistant.chat_stream_sentences(text):
         full_response.append(sentence)
 
+        # Extract smart home actions from sentence
+        clean_sentence, actions = extract_actions(sentence)
+
+        # Execute any actions immediately
+        execute_actions(actions)
+
+        # Skip TTS if the sentence was only an action tag
+        if not clean_sentence:
+            continue
+
         if first_audio:
             elapsed = time.monotonic() - t_start
-            logger.info(f"⚡ First sentence in {elapsed:.1f}s: {sentence}")
+            logger.info(f"⚡ First sentence in {elapsed:.1f}s: {clean_sentence}")
             first_audio = False
         else:
-            logger.info(f"   ➜ {sentence}")
+            logger.info(f"   ➜ {clean_sentence}")
 
-        # Synthesize and play this sentence
-        wav = tts.synthesize(sentence, language=language)
+        # Synthesize and play
+        wav = tts.synthesize(clean_sentence, language=language)
         if wav:
             audio.play(wav)
 
@@ -104,12 +152,14 @@ def run_assistant():
 
     logger.info("🐱 Claudinho starting up...")
 
-    assistant = Assistant()
+    # Initialize assistant with device list
+    device_list = smart_home.get_device_list() if smart_home else []
+    assistant = Assistant(device_list=device_list)
     detector = WakeWordDetector()
 
     audio.play_beep()
 
-    logger.info(f"👂 Listening for wake word...")
+    logger.info("👂 Listening for wake word...")
     logger.info("Press Ctrl+C to stop\n")
 
     running = True
@@ -129,7 +179,7 @@ def run_assistant():
                 audio.play_beep()
                 conversation_turn(assistant)
                 detector.resume()
-                logger.info(f"👂 Listening for wake word...\n")
+                logger.info("👂 Listening for wake word...\n")
     finally:
         detector.cleanup()
         logger.info("👋 Claudinho stopped")
@@ -142,7 +192,8 @@ def run_no_wake():
     logger.info("🐱 Claudinho (no wake word mode)")
     logger.info("Press Enter to start recording, Ctrl+C to quit\n")
 
-    assistant = Assistant()
+    device_list = smart_home.get_device_list() if smart_home else []
+    assistant = Assistant(device_list=device_list)
 
     try:
         while True:
