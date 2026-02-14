@@ -38,10 +38,11 @@ OPENCLAW_URL = "http://127.0.0.1:18789"
 OPENCLAW_TOKEN = "4e09f12594b3f0ba3ae73680d1c40bfe2d6d9abf8eafe790"
 
 # ── Recording ─────────────────────────────────────────────────
-SILENCE_THRESHOLD = 500      # RMS threshold for silence detection
-SILENCE_DURATION = 1.5       # seconds of silence to stop recording
-MAX_RECORD_DURATION = 15     # max seconds per recording
-MIN_RECORD_DURATION = 1.0    # minimum seconds before silence detection kicks in
+SILENCE_THRESHOLD = 500      # RMS threshold (fallback, auto-calibration overrides)
+SILENCE_DURATION = 1.0       # seconds of silence to stop recording (was 1.5)
+MAX_RECORD_DURATION = 10     # max seconds per recording (was 15)
+MIN_RECORD_DURATION = 0.5    # minimum seconds before silence detection kicks in (was 1.0)
+NOISE_MULTIPLIER = 3.5       # speech must be this many times louder than noise (was 2.5)
 
 # ── Paths ─────────────────────────────────────────────────────
 TMP_DIR = Path("/tmp/claudinho")

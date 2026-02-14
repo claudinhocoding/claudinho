@@ -103,8 +103,8 @@ def calibrate_noise(stream, duration: float = 0.8) -> float:
         rms_values.append(rms)
     
     noise_floor = np.mean(rms_values)
-    # Threshold = noise floor * 2.5 (speech is typically 3-10x louder than ambient)
-    threshold = max(noise_floor * 2.5, 300)  # minimum 300 to avoid hypersensitivity
+    multiplier = getattr(config, 'NOISE_MULTIPLIER', 3.5)
+    threshold = max(noise_floor * multiplier, 400)  # minimum 400 to avoid hypersensitivity
     logger.info(f"🔇 Noise floor: {noise_floor:.0f} RMS → speech threshold: {threshold:.0f}")
     return threshold
 
