@@ -27,7 +27,10 @@ PIPER_VOICES = {
 DEFAULT_LANGUAGE = "en"
 
 # ── Wake Word ─────────────────────────────────────────────────
-WAKE_WORD_MODEL = "hey_jarvis_v0.1"  # built-in; swap to custom .onnx later
+# Custom model: set to a file path (e.g. Path.home() / "claudinho" / "models" / "claudinho.onnx")
+# Built-in model: set to a string name (e.g. "hey_jarvis_v0.1")
+WAKE_WORD_MODEL = str(Path.home() / "claudinho" / "models" / "claudinho.onnx")
+WAKE_WORD_FALLBACK = "hey_jarvis_v0.1"  # used if custom model file not found
 WAKE_WORD_THRESHOLD = 0.5
 
 # ── OpenClaw Gateway ──────────────────────────────────────────

@@ -55,16 +55,27 @@ class WakeWordDetector:
         import openwakeword
         from openwakeword.model import Model
         import pyaudio
+        from pathlib import Path
         
-        # Download default models if needed
-        openwakeword.utils.download_models()
+        # Determine which model to use
+        model_path = config.WAKE_WORD_MODEL
+        if Path(model_path).exists():
+            # Custom .onnx model file
+            self._model_name = Path(model_path).stem
+            logger.info(f"Using custom wake word model: {model_path}")
+        else:
+            # Fall back to built-in model
+            model_path = getattr(config, 'WAKE_WORD_FALLBACK', 'hey_jarvis_v0.1')
+            self._model_name = model_path
+            logger.info(f"Custom model not found, using built-in: {model_path}")
+            openwakeword.utils.download_models()
         
         # Load wake word model
         self._model = Model(
-            wakeword_models=[config.WAKE_WORD_MODEL],
+            wakeword_models=[model_path],
             inference_framework="onnx",
         )
-        logger.info(f"Wake word model loaded: {config.WAKE_WORD_MODEL}")
+        logger.info(f"Wake word model loaded: {self._model_name}")
         
         # Open mic stream at native 44100 Hz
         self._pyaudio = pyaudio.PyAudio()
