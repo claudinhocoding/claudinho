@@ -72,7 +72,8 @@ class WakeWordDetector:
         model_path = config.WAKE_WORD_MODEL
         
         if Path(model_path).exists():
-            self._init_custom(model_path)
+            # Community/custom .onnx models work with openWakeWord Model class
+            self._init_oww_model(model_path)
         else:
             self._init_builtin()
         
@@ -89,32 +90,17 @@ class WakeWordDetector:
         )
         logger.info("Audio stream opened for wake word detection (44100 Hz → 16000 Hz)")
     
-    def _init_custom(self, model_path):
-        """Initialize custom .onnx classifier pipeline."""
-        import onnxruntime as ort
+    def _init_oww_model(self, model_path):
+        """Initialize openWakeWord-compatible .onnx model (community or custom)."""
+        import openwakeword
+        from openwakeword.model import Model
         
-        self._custom_mode = True
-        
-        # Load the three ONNX models
-        oww_dir = self._find_oww_models()
-        self._mel_session = ort.InferenceSession(str(oww_dir / "melspectrogram.onnx"))
-        self._emb_session = ort.InferenceSession(str(oww_dir / "embedding_model.onnx"))
-        self._cls_session = ort.InferenceSession(model_path)
-        
-        # Load normalization params
-        norm_path = Path(model_path).parent / (Path(model_path).stem + "_norm.npz")
-        if norm_path.exists():
-            norm = np.load(str(norm_path))
-            self._feat_mean = norm["mean"]
-            self._feat_std = norm["std"]
-            logger.info(f"Loaded normalization from {norm_path}")
-        else:
-            logger.warning(f"No normalization file found at {norm_path}, using raw features")
-            self._feat_mean = np.zeros(96)
-            self._feat_std = np.ones(96)
-        
-        self._mel_buffer = []
-        logger.info(f"Custom wake word model loaded: {model_path}")
+        self._custom_mode = False
+        self._model = Model(
+            wakeword_models=[model_path],
+            inference_framework="onnx",
+        )
+        logger.info(f"Wake word model loaded: {model_path}")
     
     def _init_builtin(self):
         """Initialize built-in openWakeWord model."""

@@ -27,10 +27,10 @@ PIPER_VOICES = {
 DEFAULT_LANGUAGE = "en"
 
 # ── Wake Word ─────────────────────────────────────────────────
-# Custom model: set to a file path (e.g. Path.home() / "claudinho" / "models" / "claudinho.onnx")
-# Built-in model: set to a string name (e.g. "hey_jarvis_v0.1")
-WAKE_WORD_MODEL = str(Path.home() / "claudinho" / "models" / "claudinho.onnx")
-WAKE_WORD_FALLBACK = "hey_jarvis_v0.1"  # used if custom model file not found
+# Wake word model: file path to .onnx model
+# Community models work directly with openWakeWord's Model class
+WAKE_WORD_MODEL = str(Path.home() / "claudinho" / "models" / "hey_rick.onnx")
+WAKE_WORD_FALLBACK = "hey_jarvis_v0.1"  # used if model file not found
 WAKE_WORD_THRESHOLD = 0.5
 
 # ── OpenClaw Gateway ──────────────────────────────────────────
