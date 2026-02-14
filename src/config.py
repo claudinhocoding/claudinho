@@ -37,6 +37,12 @@ WAKE_WORD_THRESHOLD = 0.5
 OPENCLAW_URL = "http://127.0.0.1:18789"
 OPENCLAW_TOKEN = "4e09f12594b3f0ba3ae73680d1c40bfe2d6d9abf8eafe790"
 
+# ── Inworld TTS ───────────────────────────────────────────────
+INWORLD_TTS_URL = "https://api.inworld.ai/tts/v1/voice"
+INWORLD_API_KEY = "endGMkV6SzRoeGgyUVVYZlB1UWZEYnBBSnhYZlRFVzk6S1hQUjFQSm00b1hzT2liZjFGNjdCczJPMm1vdzUyaXg5WmFpaTVmWEt5eTJDOE1pWUx3ZW00cU96WlBkbjkxVw=="
+INWORLD_VOICE_ID = "Theodore"
+INWORLD_MODEL = "inworld-tts-1.5-max"
+
 # ── Recording ─────────────────────────────────────────────────
 SILENCE_THRESHOLD = 500      # RMS threshold (fallback, auto-calibration overrides)
 SILENCE_DURATION = 1.0       # seconds of silence to stop recording (was 1.5)
