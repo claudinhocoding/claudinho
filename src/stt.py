@@ -73,6 +73,9 @@ def _groq_transcribe(wav_path: str, api_key: str) -> Tuple[str, str]:
     text = data.get("text", "").strip()
     language = data.get("language", config.DEFAULT_LANGUAGE)
 
+    # Groq returns full language names ("English", "Portuguese") — normalize to 2-letter codes
+    language = _normalize_language(language)
+
     # Clean up common Whisper artifacts
     text = _clean_transcription(text)
 
@@ -133,6 +136,21 @@ def _parse_transcription(stdout: str) -> str:
             text_lines.append(line)
     text = " ".join(text_lines).strip()
     return _clean_transcription(text)
+
+
+LANGUAGE_MAP = {
+    "english": "en", "portuguese": "pt", "spanish": "es",
+    "french": "fr", "german": "de", "italian": "it",
+    "japanese": "ja", "chinese": "zh", "korean": "ko",
+    "dutch": "nl", "russian": "ru", "arabic": "ar",
+}
+
+
+def _normalize_language(lang: str) -> str:
+    """Normalize language to 2-letter code (Groq returns full names)."""
+    if len(lang) <= 3:
+        return lang.lower()
+    return LANGUAGE_MAP.get(lang.lower(), lang[:2].lower())
 
 
 def _clean_transcription(text: str) -> str:
