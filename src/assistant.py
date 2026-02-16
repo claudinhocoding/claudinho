@@ -41,17 +41,40 @@ Example: "Sure, turning on the living room light. <<turn_on:Living Room Light>>"
 You can include multiple actions in one response.
 If the user asks to turn on/off "the lights" or "all lights", control all available devices."""
 
+MUSIC_PROMPT = """
+
+You can control Spotify music. Available commands:
+<<spotify_play:song name or search query>>
+<<spotify_pause>>
+<<spotify_resume>>
+<<spotify_skip>>
+<<spotify_previous>>
+<<spotify_volume:0-100>>
+<<spotify_queue:song name>>
+
+Always include natural speech along with the action tag. Tags are stripped before speaking.
+Examples:
+- "Playing some bossa nova for you. <<spotify_play:bossa nova>>"
+- "Sure, skipping this one. <<spotify_skip>>"
+- "Pausing the music. <<spotify_pause>>"
+- "Here's some Radiohead. <<spotify_play:Radiohead>>"
+You can combine music and light commands: "Setting the mood. <<turn_on:Sofa>> <<spotify_play:chill jazz>>"
+{status}"""
+
 
 class Assistant:
     """Chat with Claude through the local OpenClaw gateway."""
 
-    def __init__(self, device_list: List[str] = None):
+    def __init__(self, device_list: List[str] = None, music_status: str = None):
         self.session_user = "claudinho-voice"
         self.system_prompt = BASE_SYSTEM_PROMPT
 
         if device_list:
             devices_str = "\n".join(device_list)
             self.system_prompt += SMART_HOME_PROMPT.format(devices=devices_str)
+
+        if music_status is not None:
+            self.system_prompt += MUSIC_PROMPT.format(status=music_status)
             logger.info(f"🏠 Smart home enabled with {len(device_list)} device(s)")
 
         if not OPENCLAW_TOKEN:

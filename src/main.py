@@ -28,8 +28,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global smart home instance
+# Global smart home + music instances
 smart_home = None
+music_player = None
 
 
 def setup():
@@ -57,6 +58,15 @@ def setup():
     except Exception as e:
         logger.warning(f"Smart home discovery failed: {e}")
 
+    # Initialize Spotify
+    try:
+        from music import MusicPlayer
+        music_player = MusicPlayer()
+    except ImportError:
+        logger.info("spotipy not installed — music disabled")
+    except Exception as e:
+        logger.warning(f"Spotify init failed: {e}")
+
     logger.info("✅ Components verified")
 
 
@@ -73,15 +83,22 @@ def extract_actions(text: str):
 
 
 def execute_actions(actions: list):
-    """Execute smart home actions."""
-    if not smart_home or not actions:
+    """Execute smart home and music actions."""
+    if not actions:
         return
     for action in actions:
         try:
-            result = smart_home.execute_action(action)
-            logger.info(f"🏠 Action: {action} → {result}")
+            cmd = action.split(":")[0].strip().lower()
+            if cmd.startswith("spotify_") and music_player:
+                result = music_player.execute_action(action)
+                logger.info(f"🎵 Action: {action} → {result}")
+            elif smart_home:
+                result = smart_home.execute_action(action)
+                logger.info(f"🏠 Action: {action} → {result}")
+            else:
+                logger.warning(f"No handler for action: {action}")
         except Exception as e:
-            logger.error(f"🏠 Action failed: {action} → {e}")
+            logger.error(f"Action failed: {action} → {e}")
 
 
 def conversation_turn(assistant: Assistant):
@@ -152,9 +169,10 @@ def run_assistant():
 
     logger.info("🐱 Claudinho starting up...")
 
-    # Initialize assistant with device list
+    # Initialize assistant with device list + music
     device_list = smart_home.get_device_list() if smart_home else []
-    assistant = Assistant(device_list=device_list)
+    music_status = music_player.get_status() if music_player and music_player.available else None
+    assistant = Assistant(device_list=device_list, music_status=music_status)
     detector = WakeWordDetector()
 
     audio.play_beep()
@@ -193,7 +211,8 @@ def run_no_wake():
     logger.info("Press Enter to start recording, Ctrl+C to quit\n")
 
     device_list = smart_home.get_device_list() if smart_home else []
-    assistant = Assistant(device_list=device_list)
+    music_status = music_player.get_status() if music_player and music_player.available else None
+    assistant = Assistant(device_list=device_list, music_status=music_status)
 
     try:
         while True:

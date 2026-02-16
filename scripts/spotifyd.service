@@ -1,0 +1,21 @@
+[Unit]
+Description=Spotifyd - Spotify Connect daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=claudinho
+Group=claudinho
+ExecStart=/usr/local/bin/spotifyd --no-daemon --config-path /home/claudinho/claudinho/scripts/spotifyd.conf
+Restart=on-failure
+RestartSec=5
+
+SupplementaryGroups=audio
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spotifyd
+
+[Install]
+WantedBy=multi-user.target
