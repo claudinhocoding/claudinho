@@ -1,14 +1,16 @@
-# Building a $190 AI Voice Assistant on Raspberry Pi 5
+# Building a $200 AI Voice Assistant on Raspberry Pi 5
 
-*How I built a voice assistant that controls my home — and the AI helped design itself.*
+*How I replaced Alexa with something that actually has a personality — and the AI helped design itself.*
 
 ---
 
-I wanted a voice assistant that actually worked for me. Not one locked into a corporate ecosystem. Not one that sends everything to the cloud. Something I could hack on, extend, and own.
+I was done with Alexa. After years of "Sorry, I don't know that" and robotic responses that feel like talking to a phone tree, I wanted something different. Not smarter in the "look up a fact" way — smarter in the "actually understand what I'm saying and respond like a real person" way. Something with a character. Something that didn't feel like a deterministic chatbot following a script.
 
-So I built **Claudinho** — a DIY voice assistant running on a Raspberry Pi 5, powered by Claude through [OpenClaw](https://github.com/openclaw/openclaw). It listens for a wake word, transcribes my speech, thinks with Claude, speaks back, and controls my smart home lights. Total hardware cost: **$190**.
+I also wanted to learn. What does it actually take to build a voice assistant from scratch? What are the hard parts? Where does the magic happen?
 
-This is the story of building it — the decisions, the debugging, and the surprises along the way.
+So I built **Claudinho** — a DIY voice assistant running on a Raspberry Pi 5, powered by Claude through [OpenClaw](https://github.com/openclaw/openclaw). It listens for a wake word, transcribes my speech, thinks with Claude, speaks back, and controls my smart home lights. Total hardware cost: **~$200**.
+
+This is the story of building it — the decisions, the debugging, and the "why is Silero VAD returning 0.001 for literally everything" moments along the way.
 
 ## The Hardware: Keep It Stupid Simple
 
@@ -21,8 +23,8 @@ I spent way too long researching audio hardware before landing on the simplest p
 | Mini USB Speaker (Adafruit #3369) | $13 |
 | Official 27W USB-C PSU | $14 |
 | Official Case + Fan | $12 |
-| 32GB microSD card | $10 |
-| **Total** | **$190** |
+| 128GB microSD card | $25 |
+| **Total** | **~$200** |
 
 Why USB audio? Because I2S DACs and HAT-based audio boards mean soldering, custom drivers, and debugging ALSA configs. USB devices just show up as ALSA cards. Plug them in and they work.
 
@@ -49,13 +51,7 @@ The key insight: **the Pi handles the ears (wake word + VAD) locally, but the br
 
 ## Day 1: "Hello World" on a Pi
 
-Flashing Raspberry Pi OS Lite (headless, no desktop — we don't need pixels) was the easy part. Raspberry Pi Imager lets you pre-configure WiFi, SSH, and hostname before first boot. I set the hostname to `claudinho` and SSH'd right in:
-
-```bash
-ssh claudinho@claudinho.local
-```
-
-Then the dependency adventure began.
+Flashing Raspberry Pi OS Lite (headless, no desktop — we don't need pixels) was the easy part. Raspberry Pi Imager lets you pre-configure WiFi, SSH, and hostname before first boot. One reboot later, I could SSH right in. Then the dependency adventure began.
 
 ### The Python 3.13 Problem
 
@@ -252,7 +248,7 @@ An AI assistant that builds itself. We're living in interesting times.
 
 Everything is open source: **[github.com/claudinhocoding/claudinho](https://github.com/claudinhocoding/claudinho)**
 
-The total cost is about $190 in hardware, plus whatever you spend on API calls (Groq STT is basically free, Claude is a few cents per conversation, Inworld TTS has a free tier).
+The total cost is about $200 in hardware, plus whatever you spend on API calls (Groq STT is basically free, Claude is a few cents per conversation, Inworld TTS has a free tier).
 
 The setup takes about 2-3 hours if you follow the README. The hardest part is waiting for Whisper.cpp to compile.
 
