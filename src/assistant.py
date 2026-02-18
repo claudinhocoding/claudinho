@@ -65,17 +65,20 @@ You can combine music and light commands: "Setting the mood. <<turn_on:Sofa>> <<
 class Assistant:
     """Chat with Claude through the local OpenClaw gateway."""
 
+    # Pin all voice interactions to the main agent session
+    SESSION_KEY = "agent:main:main"
+
     def __init__(self, device_list: List[str] = None, music_status: str = None):
-        self.session_user = "claudinho-voice"
         self.system_prompt = BASE_SYSTEM_PROMPT
 
         if device_list:
             devices_str = "\n".join(device_list)
             self.system_prompt += SMART_HOME_PROMPT.format(devices=devices_str)
+            logger.info(f"🏠 Smart home enabled with {len(device_list)} device(s)")
 
         if music_status is not None:
             self.system_prompt += MUSIC_PROMPT.format(status=music_status)
-            logger.info(f"🏠 Smart home enabled with {len(device_list)} device(s)")
+            logger.info(f"🎵 Spotify enabled (status: {music_status})")
 
         if not OPENCLAW_TOKEN:
             raise ValueError(
@@ -95,10 +98,10 @@ class Assistant:
                 headers={
                     "Authorization": f"Bearer {OPENCLAW_TOKEN}",
                     "Content-Type": "application/json",
+                    "x-openclaw-session-key": self.SESSION_KEY,
                 },
                 json={
                     "model": "openclaw",
-                    "user": self.session_user,
                     "stream": True,
                     "messages": [
                         {"role": "system", "content": self.system_prompt},
@@ -166,10 +169,10 @@ class Assistant:
                 headers={
                     "Authorization": f"Bearer {OPENCLAW_TOKEN}",
                     "Content-Type": "application/json",
+                    "x-openclaw-session-key": self.SESSION_KEY,
                 },
                 json={
                     "model": "openclaw",
-                    "user": self.session_user,
                     "messages": [
                         {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": text},
@@ -193,6 +196,5 @@ class Assistant:
             return "Sorry, something went wrong."
 
     def reset(self):
-        """Reset session."""
-        self.session_user = f"claudinho-voice-{id(self)}"
+        """Reset conversation context."""
         logger.info("Conversation reset")
