@@ -82,16 +82,18 @@ def extract_actions(text: str):
     return clean_text, actions
 
 
-def execute_actions(actions: list):
-    """Execute smart home and music actions."""
+def execute_actions(actions: list) -> bool:
+    """Execute smart home and music actions. Returns True if any spotify action was executed."""
+    had_spotify_action = False
     if not actions:
-        return
+        return had_spotify_action
     for action in actions:
         try:
             cmd = action.split(":")[0].strip().lower()
             if cmd.startswith("spotify_") and music_player:
                 result = music_player.execute_action(action)
                 logger.info(f"🎵 Action: {action} → {result}")
+                had_spotify_action = True
             elif smart_home:
                 result = smart_home.execute_action(action)
                 logger.info(f"🏠 Action: {action} → {result}")
@@ -99,33 +101,38 @@ def execute_actions(actions: list):
                 logger.warning(f"No handler for action: {action}")
         except Exception as e:
             logger.error(f"Action failed: {action} → {e}")
+    return had_spotify_action
 
 
-def conversation_turn(assistant: Assistant):
+def conversation_turn(assistant: Assistant) -> bool:
     """
     Handle one conversation turn with streaming + smart home actions.
+
+    Returns True if any spotify action was executed during this turn.
 
     Pipeline:
     1. Record until silence (webrtcvad)
     2. Transcribe (Groq cloud, <1s)
     3. Stream Claude's response sentence by sentence
-    4. Extract & execute smart home actions
+    4. Extract & execute smart home/music actions
     5. TTS + play each sentence (without action tags)
     """
+    had_spotify_action = False
+
     # Record user speech
     wav_path = str(config.TMP_DIR / "input.wav")
     result = audio.record_until_silence(wav_path)
 
     if not result:
         logger.info("No speech detected, going back to listening")
-        return
+        return had_spotify_action
 
     # Transcribe
     text, language = stt.transcribe(wav_path)
 
     if not text.strip():
         logger.info("Empty transcription, going back to listening")
-        return
+        return had_spotify_action
 
     logger.info(f"📝 [{language}] User: {text}")
 
@@ -142,7 +149,8 @@ def conversation_turn(assistant: Assistant):
         clean_sentence, actions = extract_actions(sentence)
 
         # Execute any actions immediately
-        execute_actions(actions)
+        if execute_actions(actions):
+            had_spotify_action = True
 
         # Skip TTS if the sentence was only an action tag
         if not clean_sentence:
@@ -161,6 +169,7 @@ def conversation_turn(assistant: Assistant):
             audio.play(wav)
 
     logger.info(f"💬 Full response: {' '.join(full_response)}")
+    return had_spotify_action
 
 
 def run_assistant():
@@ -194,8 +203,30 @@ def run_assistant():
             if detector.listen():
                 logger.info("👋 Wake word detected!")
                 detector.pause()
+
+                # Pause Spotify if playing (so beep + TTS can use the speaker)
+                was_playing = False
+                if music_player and music_player.available:
+                    try:
+                        status = music_player.get_status()
+                        if status.startswith("Now playing"):
+                            music_player.pause()
+                            was_playing = True
+                            logger.info("⏸️  Spotify paused for conversation")
+                    except Exception:
+                        pass
+
                 audio.play_beep()
-                conversation_turn(assistant)
+                had_spotify_action = conversation_turn(assistant)
+
+                # Auto-resume Spotify if it was playing and no music commands were given
+                if was_playing and not had_spotify_action:
+                    try:
+                        music_player.resume()
+                        logger.info("▶️  Spotify auto-resumed")
+                    except Exception:
+                        pass
+
                 detector.resume()
                 logger.info("👂 Listening for wake word...\n")
     finally:
