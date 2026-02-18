@@ -35,7 +35,7 @@ music_player = None
 
 def setup():
     """Create temp dirs, verify components, discover smart home devices."""
-    global smart_home
+    global smart_home, music_player
     config.TMP_DIR.mkdir(parents=True, exist_ok=True)
 
     # Whisper.cpp is optional (Groq cloud STT is primary)
